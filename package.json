@@ -1,0 +1,26 @@
+{
+  "name": "voxflow-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "VoxFlow Studio sales site (Archetype 01: Cupertino Hardware Noir) by BLACK EYE",
+  "scripts": {
+    "prerender": "tsx scripts/prerender.ts",
+    "dev": "npm run prerender && vite",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && npm run prerender && vite build",
+    "build:preview": "npm run prerender && vite build --config vite.preview.config.ts && node scripts/finalize-preview.mjs",
+    "serve": "vite preview --port 4173"
+  },
+  "dependencies": {
+    "three": "0.180.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.30",
+    "@types/three": "0.180.0",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vite": "7.3.8",
+    "vite-plugin-singlefile": "2.3.4"
+  }
+}
