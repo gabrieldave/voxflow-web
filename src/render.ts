@@ -418,6 +418,31 @@ ${
   ${T("p", "faq.req", 'class="req"')}
 </section>
 
+<section class="pro-suite band" id="pro-suite" aria-labelledby="pro-suite-title">
+  <div class="sec-head">
+    ${T("h2", "pro.title", 'id="pro-suite-title" class="h2"')}
+    ${T("p", "pro.sub", 'class="sec-sub"')}
+  </div>
+  <div class="ps-grid">
+    <article class="ps-card">
+      ${T("span", "pro.cvTag", 'class="ps-eyebrow mono"')}
+      ${T("h3", "pro.cvTitle")}
+      ${T("p", "pro.cvBody")}
+      <ul class="ps-list">${[1, 2, 3].map((n) => `<li>${check}${T("span", `pro.cv${n}`)}</li>`).join("")}</ul>
+    </article>
+    <article class="ps-card is-hot">
+      ${T("span", "pro.vsTag", 'class="ps-eyebrow mono"')}
+      ${T("h3", "pro.vsTitle")}
+      ${T("p", "pro.vsBody")}
+      <ul class="ps-list">${[1, 2, 3].map((n) => `<li>${check}${T("span", `pro.vs${n}`)}</li>`).join("")}</ul>
+    </article>
+  </div>
+  <div class="ps-cta">
+    <p class="ps-price"><span class="price-n mono">$49</span> ${T("span", "pro.once", 'class="price-u"')}</p>
+    <a class="btn btn-light" href="#pricing" data-i18n="pro.cta">${t("pro.cta")}</a>
+  </div>
+</section>
+
 <section class="compare band" id="compare" aria-labelledby="compare-title">
   <div class="sec-head">
     ${T("h2", "compare.title", 'id="compare-title" class="h2"')}
@@ -427,10 +452,19 @@ ${
     <table class="cmp">
       <thead><tr><td></td>${T("th", "compare.c1", 'scope="col"')}${T("th", "compare.c2", 'scope="col"')}${T("th", "compare.c3", 'scope="col" class="is-us"')}</tr></thead>
       <tbody>
-        ${(["Price", "Three", "Where", "What"] as const)
+        ${(
+          [
+            ["Price", true],
+            ["Three", true],
+            ["Privacy", false],
+            ["Dictionary", false],
+            ["CV", false],
+            ["Stream", false],
+            ["Trial", false],
+          ] as const
+        )
           .map(
-            (r) => {
-              const num = r === "Price" || r === "Three";
+            ([r, num]) => {
               const cnt = r === "Three" ? " data-count" : "";
               return `<tr>${T("th", `compare.r${r}`, 'scope="row"')}${T("td", `compare.v1${r}`, (num ? 'class="mono"' : "") + cnt)}${T("td", `compare.v2${r}`, (num ? 'class="mono"' : "") + cnt)}${T("td", `compare.v3${r}`, `class="is-us${num ? " mono" : ""}"${cnt}`)}</tr>`;
             }

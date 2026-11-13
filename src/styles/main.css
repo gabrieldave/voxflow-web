@@ -2223,3 +2223,104 @@ code {
 .keycap.is-down .keycap-canvas {
   translate: 0 2px;
 }
+
+/* ---------- Suite Pro (pillars) ---------- */
+.pro-suite .ps-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 22px;
+}
+
+.ps-card {
+  position: relative;
+  padding: 26px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.015));
+  overflow: hidden;
+}
+
+.ps-card.is-hot {
+  border-color: rgba(0, 240, 255, 0.38);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), 0 24px 60px -40px rgba(0, 240, 255, 0.55);
+}
+
+.ps-eyebrow {
+  display: inline-block;
+  font-size: 0.65rem;
+  letter-spacing: 0.18em;
+  color: var(--ink-3);
+  margin-bottom: 10px;
+}
+
+.ps-card h3 {
+  margin: 0 0 8px;
+  font-size: 1.16rem;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+}
+
+.ps-card p {
+  margin: 0 0 14px;
+  color: var(--ink-2);
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
+.ps-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ps-list li {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 8px;
+  align-items: start;
+  font-size: 0.86rem;
+  color: var(--ink-2);
+}
+
+.ps-list svg {
+  width: 14px;
+  height: 14px;
+  margin-top: 3px;
+  color: var(--ok);
+}
+
+.ps-cta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 22px;
+  padding: 18px 22px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ps-price {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ps-price .price-n {
+  font-size: 1.9rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+@media (max-width: 860px) {
+  .pro-suite .ps-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
