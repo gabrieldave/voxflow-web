@@ -20,7 +20,7 @@ const env = (key: string): string | undefined =>
 export const funnel = {
   product: {
     name: "VoxFlow Studio",
-    version: "2.4.0",
+    version: "2.4.1",
     company: "BLACK EYE",
     bundleId: "com.blackeye.voxflowstudio",
   },
@@ -38,9 +38,9 @@ export const funnel = {
   download: {
     /** Absolute or root-relative URL of the notarized .dmg */
     dmgUrl: "/api/download/latest",
-    /** shasum -a 256 VoxFlowStudio-2.4.0.dmg — hydrated dynamically from /api/updates/latest */
+    /** shasum -a 256 VoxFlowStudio-2.4.1.dmg — hydrated dynamically from /api/updates/latest */
     sha256: "",
-    fileName: "VoxFlowStudio-2.4.0.dmg",
+    fileName: "VoxFlowStudio-2.4.1.dmg",
   },
 
   trialDays: 14,
@@ -75,7 +75,7 @@ export const funnel = {
   links: {
     privacy: "/privacy",
     terms: "/terms",
-    contact: "mailto:soporte@voxflow.iareal.net",
+    contact: "mailto:voxflow@iareal.net",
   },
 } as const;
 

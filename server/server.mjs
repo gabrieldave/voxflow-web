@@ -14,9 +14,9 @@ const RELEASES = path.join(STORAGE, "releases");
 const APP_URL = (process.env.NEXT_PUBLIC_APP_URL || "https://voxflow.iareal.net").replace(/\/$/, "");
 const N8N_URL = (process.env.N8N_PAYMENT_URL || "https://n8n.vibesystems.tech/webhook/payment").replace(/\/$/, "");
 const N8N_EMAIL_URL = (process.env.N8N_EMAIL_URL || "https://n8n.vibesystems.tech/webhook/email/send").replace(/\/$/, "");
-const EMAIL_FROM = process.env.EMAIL_FROM || "VoxFlow Studio <soporte@voxflow.iareal.net>";
+const EMAIL_FROM = process.env.EMAIL_FROM || "VoxFlow Studio <voxflow@iareal.net>";
 const DB_URL = process.env.DATABASE_URL || process.env.APP_VOXFLOW_DATABASE_URL || "";
-const VERSION = "2.4.0";
+const VERSION = "2.4.1";
 
 const PLANS = {
   personal: { tier: "Personal", price: 2900, maxDevices: 1 },
