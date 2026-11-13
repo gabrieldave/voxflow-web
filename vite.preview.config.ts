@@ -9,6 +9,7 @@ export default defineConfig({
     outDir: "dist-preview",
     emptyOutDir: true,
     target: "es2022",
+    sourcemap: false,
     assetsInlineLimit: 100_000_000,
     cssCodeSplit: false,
     rollupOptions: {

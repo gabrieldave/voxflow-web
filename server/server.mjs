@@ -16,7 +16,7 @@ const N8N_URL = (process.env.N8N_PAYMENT_URL || "https://n8n.vibesystems.tech/we
 const N8N_EMAIL_URL = (process.env.N8N_EMAIL_URL || "https://n8n.vibesystems.tech/webhook/email/send").replace(/\/$/, "");
 const EMAIL_FROM = process.env.EMAIL_FROM || "VoxFlow Studio <soporte@voxflow.iareal.net>";
 const DB_URL = process.env.DATABASE_URL || process.env.APP_VOXFLOW_DATABASE_URL || "";
-const VERSION = "2.3.1";
+const VERSION = "2.3.2";
 
 const PLANS = {
   personal: { tier: "Personal", price: 2900, maxDevices: 1 },
@@ -41,9 +41,16 @@ async function migrate() {
   await pool.query(`CREATE TABLE IF NOT EXISTS trial_leads (
     id BIGSERIAL PRIMARY KEY, email TEXT NOT NULL, locale TEXT, country TEXT, version_downloaded TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW())`);
+  // Ancla de trial por hardware: el reloj válido es SIEMPRE el del servidor (NOW()).
+  await pool.query(`CREATE TABLE IF NOT EXISTS hardware_trials (
+    hardware_hash TEXT PRIMARY KEY,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    app_version TEXT)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS orders_email_idx ON orders (lower(email))`);
   await pool.query(`CREATE INDEX IF NOT EXISTS activations_license_idx ON license_activations (license_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS trial_leads_email_idx ON trial_leads (lower(email))`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS hardware_trials_last_seen_idx ON hardware_trials (last_seen_at DESC)`);
 }
 
 // --- Ed25519 con crypto nativo (DER PKCS8 para seed raw) ---
@@ -93,6 +100,14 @@ function signReceipt(payload) {
   return `VFS1R.${payloadB64}.${sig}`;
 }
 
+/** Sello genérico Ed25519: `<prefix>.<payloadB64url>.<sigB64url>` */
+function signSeal(prefix, payload) {
+  const priv = process.env.VOXFLOW_ED25519_PRIVATE_KEY;
+  if (!priv) throw new Error("missing signing key");
+  const payloadB64 = jsonPayload(payload);
+  return `${prefix}.${payloadB64}.${signEd25519(payloadB64, priv)}`;
+}
+
 // rate-limit mínimo por IP
 const hits = new Map();
 function rateLimited(ip, max = 60, windowMs = 60000) {
@@ -114,6 +129,7 @@ function readBody(req) {
   });
 }
 function securityHeaders(res) {
+  res.removeHeader("X-Powered-By");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "SAMEORIGIN");
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -167,8 +183,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === "/api/download/latest" && (req.method === "GET" || req.method === "HEAD")) {
       const candidates = [
+        path.join(RELEASES, "VoxFlowStudio-2.3.2.dmg"),
         path.join(RELEASES, "VoxFlowStudio-2.3.1.dmg"),
-        path.join(RELEASES, "VoxFlowStudio-2.3.0.dmg"),
         path.join(RELEASES, "VoxFlowStudio-Installer.dmg"),
       ];
       const f = candidates.find((c) => fs.existsSync(c)) || null;
@@ -300,6 +316,40 @@ const server = http.createServer(async (req, res) => {
       }
       return sendJson(res, 200, { ok: true, downloadUrl: "/api/download/latest" });
     }
+    // Ancla de trial por hardware: 14 días contados SIEMPRE por el reloj del VPS/PostgreSQL.
+    // Respuesta firmada Ed25519 (VFST) para que no se pueda falsificar con /etc/hosts o proxy local.
+    if (p === "/api/trial/verify" && req.method === "POST") {
+      if (rateLimited(ip, 30)) return sendJson(res, 429, { error: "too many requests" });
+      const body = JSON.parse((await readBody(req)) || "{}");
+      const hardwareHash = String(body.hardwareHash || "").trim();
+      const appVersion = String(body.appVersion || "").slice(0, 32);
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(hardwareHash)) return sendJson(res, 400, { error: "invalid hardwareHash" });
+      if (!pool) return sendJson(res, 503, { error: "database unavailable" });
+      if (!process.env.VOXFLOW_ED25519_PRIVATE_KEY) return sendJson(res, 503, { error: "signing unavailable" });
+      const { rows } = await pool.query(
+        `INSERT INTO hardware_trials (hardware_hash, first_seen_at, last_seen_at, app_version)
+         VALUES ($1, NOW(), NOW(), $2)
+         ON CONFLICT (hardware_hash) DO UPDATE
+           SET last_seen_at = NOW(),
+               app_version = COALESCE(EXCLUDED.app_version, hardware_trials.app_version)
+         RETURNING EXTRACT(EPOCH FROM first_seen_at)::bigint AS start_epoch,
+                   EXTRACT(EPOCH FROM NOW())::bigint          AS now_epoch,
+                   GREATEST(0, EXTRACT(EPOCH FROM (first_seen_at + INTERVAL '14 days' - NOW())))::bigint AS remaining_epoch`,
+        [hardwareHash, appVersion || null]
+      );
+      const r = rows[0];
+      const remainingSeconds = Number(r.remaining_epoch);
+      const payload = {
+        product: "com.blackeye.voxflowstudio",
+        hardwareHash,
+        serverTimestamp: Number(r.now_epoch),
+        trialStartTimestamp: Number(r.start_epoch),
+        remainingSeconds,
+        expired: remainingSeconds <= 0,
+      };
+      const seal = signSeal("VFST", payload);
+      return sendJson(res, 200, { ok: true, ...payload, seal });
+    }
     if (p === "/pago/success" && req.method === "GET") {
       const sessionId = url.searchParams.get("session_id");
       const lang = url.searchParams.get("lang") || "es";
@@ -313,7 +363,7 @@ const server = http.createServer(async (req, res) => {
           keyHtml = `<p>Cargando tu licencia… / Loading your license…</p><script>setTimeout(()=>location.reload(),2500)</script>`;
         }
       }
-      const html = `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><title>VoxFlow Studio — Pago completado</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font-family:system-ui;max-width:640px;margin:60px auto;padding:0 20px"><h1>${lang === "en" ? "Payment successful" : "Pago completado"}</h1>${keyHtml}<p><a href="/api/download/latest">Descargar VoxFlowStudio-2.3.1.dmg / Download</a></p><ol><li>${lang==="en"?"Download the DMG":"Descarga el DMG"}</li><li>${lang==="en"?"Open VoxFlow Studio and paste the key":"Abre VoxFlow Studio y pega la clave"}</li><li>${lang==="en"?"Done — offline forever":"Listo — offline para siempre"}</li></ol></body></html>`;
+      const html = `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><title>VoxFlow Studio — Pago completado</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font-family:system-ui;max-width:640px;margin:60px auto;padding:0 20px"><h1>${lang === "en" ? "Payment successful" : "Pago completado"}</h1>${keyHtml}<p><a href="/api/download/latest">Descargar VoxFlowStudio-2.3.2.dmg / Download</a></p><ol><li>${lang==="en"?"Download the DMG":"Descarga el DMG"}</li><li>${lang==="en"?"Open VoxFlow Studio and paste the key":"Abre VoxFlow Studio y pega la clave"}</li><li>${lang==="en"?"Done — offline forever":"Listo — offline para siempre"}</li></ol></body></html>`;
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); return res.end(html);
     }
     // Estáticos

@@ -7,6 +7,8 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     target: "es2022",
+    // Nadie puede reconstruir el código TypeScript desde DevTools: sin sourcemaps en producción.
+    sourcemap: false,
     assetsInlineLimit: 0,
     rollupOptions: {
       input: {
