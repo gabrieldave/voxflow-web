@@ -16,7 +16,7 @@ const N8N_URL = (process.env.N8N_PAYMENT_URL || "https://n8n.vibesystems.tech/we
 const N8N_EMAIL_URL = (process.env.N8N_EMAIL_URL || "https://n8n.vibesystems.tech/webhook/email/send").replace(/\/$/, "");
 const EMAIL_FROM = process.env.EMAIL_FROM || "VoxFlow Studio <soporte@voxflow.iareal.net>";
 const DB_URL = process.env.DATABASE_URL || process.env.APP_VOXFLOW_DATABASE_URL || "";
-const VERSION = "2.3.2";
+const VERSION = "2.3.3";
 
 const PLANS = {
   personal: { tier: "Personal", price: 2900, maxDevices: 1 },
@@ -222,15 +222,17 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/updates/latest" && req.method === "GET") {
       const manifestPath = path.join(RELEASES, "latest.json");
       if (fs.existsSync(manifestPath)) {
-        res.setHeader("cache-control", "public, max-age=3600");
+        // El manifiesto cambia con cada release: nunca servir una copia cacheada.
+        res.setHeader("cache-control", "no-store, max-age=0");
+        res.setHeader("cdn-cache-control", "no-store");
         return sendJson(res, 200, JSON.parse(fs.readFileSync(manifestPath, "utf8")));
       }
       return sendJson(res, 404, { error: "no release" });
     }
     if (p === "/api/download/latest" && (req.method === "GET" || req.method === "HEAD")) {
       const candidates = [
+        path.join(RELEASES, "VoxFlowStudio-2.3.3.dmg"),
         path.join(RELEASES, "VoxFlowStudio-2.3.2.dmg"),
-        path.join(RELEASES, "VoxFlowStudio-2.3.1.dmg"),
         path.join(RELEASES, "VoxFlowStudio-Installer.dmg"),
       ];
       const f = candidates.find((c) => fs.existsSync(c)) || null;
@@ -238,7 +240,8 @@ const server = http.createServer(async (req, res) => {
       const fileName = path.basename(f);
       res.setHeader("content-type", "application/x-apple-diskimage");
       res.setHeader("content-disposition", `attachment; filename="${fileName}"`);
-      res.setHeader("cache-control", "public, max-age=86400");
+      res.setHeader("cache-control", "no-store, max-age=0");
+      res.setHeader("cdn-cache-control", "no-store");
       if (req.method === "HEAD") { res.setHeader("content-length", String(fs.statSync(f).size)); return res.end(); }
       return fs.createReadStream(f).pipe(res);
     }
@@ -480,7 +483,7 @@ const server = http.createServer(async (req, res) => {
           keyHtml = `<p>Cargando tu licencia… / Loading your license…</p><script>setTimeout(()=>location.reload(),2500)</script>`;
         }
       }
-      const html = `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><title>VoxFlow Studio — Pago completado</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font-family:system-ui;max-width:640px;margin:60px auto;padding:0 20px"><h1>${lang === "en" ? "Payment successful" : "Pago completado"}</h1>${keyHtml}<p><a href="/api/download/latest">Descargar VoxFlowStudio-2.3.2.dmg / Download</a></p><ol><li>${lang==="en"?"Download the DMG":"Descarga el DMG"}</li><li>${lang==="en"?"Open VoxFlow Studio and paste the key":"Abre VoxFlow Studio y pega la clave"}</li><li>${lang==="en"?"Done — offline forever":"Listo — offline para siempre"}</li></ol></body></html>`;
+      const html = `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><title>VoxFlow Studio — Pago completado</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font-family:system-ui;max-width:640px;margin:60px auto;padding:0 20px"><h1>${lang === "en" ? "Payment successful" : "Pago completado"}</h1>${keyHtml}<p><a href="/api/download/latest">Descargar VoxFlowStudio-2.3.3.dmg / Download</a></p><ol><li>${lang==="en"?"Download the DMG":"Descarga el DMG"}</li><li>${lang==="en"?"Open VoxFlow Studio and paste the key":"Abre VoxFlow Studio y pega la clave"}</li><li>${lang==="en"?"Done — offline forever":"Listo — offline para siempre"}</li></ol></body></html>`;
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); return res.end(html);
     }
     // Idioma por país/cookie: "/" (inglés) y "/es/" (español).
