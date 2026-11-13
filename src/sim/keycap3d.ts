@@ -32,6 +32,7 @@ class Spring {
   v = 0;
   constructor(public x: number, public target: number, public response: number, public damping = 1) {}
   step(dt: number) {
+    if (!Number.isFinite(dt) || dt <= 0 || !Number.isFinite(this.target)) return;
     const w = (2 * Math.PI) / this.response;
     const k = w * w;
     const c = 2 * this.damping * w;
@@ -42,6 +43,7 @@ class Spring {
       this.v += a * h;
       this.x += this.v * h;
     }
+    if (!Number.isFinite(this.x) || !Number.isFinite(this.v)) this.snap();
   }
   get settled() {
     return Math.abs(this.x - this.target) < 1e-4 && Math.abs(this.v) < 1e-3;
@@ -269,7 +271,8 @@ export class Keycap3D {
   }
 
   setLevel(level: number) {
-    this.glow.target = 0.2 + level * 1.4;
+    if (!Number.isFinite(level)) return;
+    this.glow.target = 0.2 + Math.max(0, Math.min(1, level)) * 1.4;
     this.wake();
   }
 
@@ -286,8 +289,11 @@ export class Keycap3D {
   /** −1…1 pointer position over the stage */
   tilt(nx: number, ny: number) {
     if (this.reduced) return;
-    this.tiltY.target = nx * 0.16;
-    this.tiltX.target = ny * 0.1;
+    if (!Number.isFinite(nx) || !Number.isFinite(ny)) return;
+    const x = Math.max(-1, Math.min(1, nx));
+    const y = Math.max(-1, Math.min(1, ny));
+    this.tiltY.target = x * 0.16;
+    this.tiltX.target = y * 0.1;
     this.wake();
   }
 
@@ -304,12 +310,13 @@ export class Keycap3D {
     const springs = [this.press, this.tiltX, this.tiltY, this.glow];
     springs.forEach((s) => s.step(dt));
 
-    this.color.lerp(this.colorTarget, 1 - Math.exp(-dt * 14));
+    this.color.lerp(this.colorTarget, 1 - Math.exp(-Math.max(dt, 0) * 14));
     const glow = Math.max(0, this.glow.x);
 
     this.key.position.y = REST_Y - this.press.x * TRAVEL;
-    this.scene.rotation.x = this.tiltX.x;
-    this.scene.rotation.y = this.tiltY.x;
+    this.scene.rotation.x = Number.isFinite(this.tiltX.x) ? this.tiltX.x : 0;
+    this.scene.rotation.y = Number.isFinite(this.tiltY.x) ? this.tiltY.x : 0;
+    if (!Number.isFinite(this.key.position.y)) this.key.position.y = REST_Y;
 
     this.led.material.emissive.copy(this.color);
     this.led.material.emissiveIntensity = glow;

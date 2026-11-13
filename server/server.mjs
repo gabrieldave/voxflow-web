@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import { createAdmin } from "./admin.mjs";
 
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -12,9 +13,10 @@ const STORAGE = process.env.STORAGE_LOCAL_DIR || "/app/storage";
 const RELEASES = path.join(STORAGE, "releases");
 const APP_URL = (process.env.NEXT_PUBLIC_APP_URL || "https://voxflow.iareal.net").replace(/\/$/, "");
 const N8N_URL = (process.env.N8N_PAYMENT_URL || "https://n8n.vibesystems.tech/webhook/payment").replace(/\/$/, "");
-const N8N_EMAIL_URL = process.env.N8N_EMAIL_URL || "";
+const N8N_EMAIL_URL = (process.env.N8N_EMAIL_URL || "https://n8n.vibesystems.tech/webhook/email/send").replace(/\/$/, "");
+const EMAIL_FROM = process.env.EMAIL_FROM || "VoxFlow Studio <soporte@voxflow.iareal.net>";
 const DB_URL = process.env.DATABASE_URL || process.env.APP_VOXFLOW_DATABASE_URL || "";
-const VERSION = "2.3.0";
+const VERSION = "2.3.1";
 
 const PLANS = {
   personal: { tier: "Personal", price: 2900, maxDevices: 1 },
@@ -39,6 +41,9 @@ async function migrate() {
   await pool.query(`CREATE TABLE IF NOT EXISTS trial_leads (
     id BIGSERIAL PRIMARY KEY, email TEXT NOT NULL, locale TEXT, country TEXT, version_downloaded TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW())`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS orders_email_idx ON orders (lower(email))`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS activations_license_idx ON license_activations (license_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS trial_leads_email_idx ON trial_leads (lower(email))`);
 }
 
 // --- Ed25519 con crypto nativo (DER PKCS8 para seed raw) ---
@@ -130,12 +135,27 @@ function serveStatic(req, res, pathname) {
   return true;
 }
 
+const admin = createAdmin({
+  pool,
+  appUrl: APP_URL,
+  n8nEmailUrl: N8N_EMAIL_URL,
+  emailFrom: EMAIL_FROM,
+  version: VERSION,
+  signLicense,
+  sendJson,
+  readBody,
+});
+
 const server = http.createServer(async (req, res) => {
   securityHeaders(res);
   const url = new URL(req.url, `http://${req.headers.host}`);
   const p = url.pathname;
   const ip = clientIp(req);
   try {
+    if (admin.isAdminPath(p)) {
+      const handled = await admin.handle(req, res, url, p);
+      if (handled !== false) return;
+    }
     if (p === "/api/health") return sendJson(res, 200, { ok: true, version: VERSION });
     if (p === "/api/updates/latest" && req.method === "GET") {
       const manifestPath = path.join(RELEASES, "latest.json");
@@ -146,12 +166,16 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 404, { error: "no release" });
     }
     if (p === "/api/download/latest" && (req.method === "GET" || req.method === "HEAD")) {
-      const dmg = path.join(RELEASES, "VoxFlowStudio-2.3.0.dmg");
-      const fallback = path.join(RELEASES, "VoxFlowStudio-Installer.dmg");
-      const f = fs.existsSync(dmg) ? dmg : fs.existsSync(fallback) ? fallback : null;
+      const candidates = [
+        path.join(RELEASES, "VoxFlowStudio-2.3.1.dmg"),
+        path.join(RELEASES, "VoxFlowStudio-2.3.0.dmg"),
+        path.join(RELEASES, "VoxFlowStudio-Installer.dmg"),
+      ];
+      const f = candidates.find((c) => fs.existsSync(c)) || null;
       if (!f) return sendJson(res, 404, { error: "dmg not published" });
+      const fileName = path.basename(f);
       res.setHeader("content-type", "application/x-apple-diskimage");
-      res.setHeader("content-disposition", 'attachment; filename="VoxFlowStudio-2.3.0.dmg"');
+      res.setHeader("content-disposition", `attachment; filename="${fileName}"`);
       res.setHeader("cache-control", "public, max-age=86400");
       if (req.method === "HEAD") { res.setHeader("content-length", String(fs.statSync(f).size)); return res.end(); }
       return fs.createReadStream(f).pipe(res);
@@ -289,7 +313,7 @@ const server = http.createServer(async (req, res) => {
           keyHtml = `<p>Cargando tu licencia… / Loading your license…</p><script>setTimeout(()=>location.reload(),2500)</script>`;
         }
       }
-      const html = `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><title>VoxFlow Studio — Pago completado</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font-family:system-ui;max-width:640px;margin:60px auto;padding:0 20px"><h1>${lang === "en" ? "Payment successful" : "Pago completado"}</h1>${keyHtml}<p><a href="/api/download/latest">Descargar VoxFlowStudio-2.3.0.dmg / Download</a></p><ol><li>${lang==="en"?"Download the DMG":"Descarga el DMG"}</li><li>${lang==="en"?"Open VoxFlow Studio and paste the key":"Abre VoxFlow Studio y pega la clave"}</li><li>${lang==="en"?"Done — offline forever":"Listo — offline para siempre"}</li></ol></body></html>`;
+      const html = `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><title>VoxFlow Studio — Pago completado</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font-family:system-ui;max-width:640px;margin:60px auto;padding:0 20px"><h1>${lang === "en" ? "Payment successful" : "Pago completado"}</h1>${keyHtml}<p><a href="/api/download/latest">Descargar VoxFlowStudio-2.3.1.dmg / Download</a></p><ol><li>${lang==="en"?"Download the DMG":"Descarga el DMG"}</li><li>${lang==="en"?"Open VoxFlow Studio and paste the key":"Abre VoxFlow Studio y pega la clave"}</li><li>${lang==="en"?"Done — offline forever":"Listo — offline para siempre"}</li></ol></body></html>`;
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); return res.end(html);
     }
     // Estáticos

@@ -341,13 +341,14 @@ export function initSimulator(root: HTMLElement, bus: EventTarget) {
   window.addEventListener("blur", release);
 
   keyBtn.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || !e.isPrimary) return;
+    e.preventDefault(); // iOS: evita selección/menú contextual y scroll fantasma
     try {
       keyBtn.setPointerCapture(e.pointerId);
     } catch {
       /* synthetic or already-released pointer */
     }
-    void press();
+    void press().catch(() => release());
   });
   keyBtn.addEventListener("pointerup", release);
   keyBtn.addEventListener("pointercancel", release);
@@ -355,10 +356,32 @@ export function initSimulator(root: HTMLElement, bus: EventTarget) {
   keyBtn.addEventListener("contextmenu", (e) => e.preventDefault());
 
   root.addEventListener("pointermove", (e) => {
-    const r = root.getBoundingClientRect();
-    keycap?.tilt(((e.clientX - r.left) / r.width) * 2 - 1, ((e.clientY - r.top) / r.height) * 2 - 1);
+    if (!e.isPrimary) return;
+    // `.stage` pasa a `display: contents` en móvil: su rect es 0×0 y eso
+    // genera Infinity/NaN en el tilt. Usamos el rect real del keycap.
+    const r = keyBtn.getBoundingClientRect();
+    if (!(r.width > 0) || !(r.height > 0)) return;
+    const nx = ((e.clientX - r.left) / r.width) * 2 - 1;
+    const ny = ((e.clientY - r.top) / r.height) * 2 - 1;
+    if (!Number.isFinite(nx) || !Number.isFinite(ny)) return;
+    keycap?.tilt(nx, ny);
   });
   root.addEventListener("pointerleave", () => keycap?.tilt(0, 0));
+  keyBtn.addEventListener("pointerleave", () => keycap?.tilt(0, 0));
+  // La tecla nunca debe quedarse "pegada" si el gesto se pierde.
+  window.addEventListener("pointerup", () => release());
+  window.addEventListener("pointercancel", () => release());
+  // Si el contexto WebGL se pierde (memoria en iOS), mostramos el keycap DOM
+  // en vez de dejar un canvas transparente (= la tecla desaparecía).
+  keyCanvas.addEventListener("webglcontextlost", (e) => {
+    e.preventDefault();
+    keyBtn.classList.remove("has-3d");
+    keyBtn.classList.add("no-3d");
+  });
+  keyCanvas.addEventListener("webglcontextrestored", () => {
+    keyBtn.classList.remove("no-3d");
+    keyBtn.classList.add("has-3d");
+  });
 
   srcBtns.forEach((b) =>
     b.addEventListener("click", async () => {

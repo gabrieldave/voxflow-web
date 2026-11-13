@@ -2196,3 +2196,30 @@ code {
   .hint { font-size: 0.82rem; line-height: 1.65; }
   .win-body { min-height: 0; }
 }
+
+/* ---------- F5 keycap: nunca debe ocultarse al pulsarla en móvil ---------- */
+/* Blindaje contra :active, selección nativa iOS, menú contextual y scroll fantasma. */
+.keycap,
+.keycap:active,
+.keycap:focus,
+.keycap:focus-visible,
+.keycap.is-down {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.keycap-canvas,
+.keycap-fallback {
+  pointer-events: none;
+}
+
+/* Mientras se mantiene pulsada, la tecla baja en Y (recorrido mecánico real). */
+.keycap.is-down .keycap-canvas {
+  translate: 0 2px;
+}
