@@ -219,7 +219,7 @@ const server = http.createServer(async (req, res) => {
       if (handled !== false) return;
     }
     if (p === "/api/health") return sendJson(res, 200, { ok: true, version: VERSION });
-    if (p === "/api/updates/latest" && req.method === "GET") {
+    if (p === "/api/updates/latest" && (req.method === "GET" || req.method === "HEAD")) {
       const manifestPath = path.join(RELEASES, "latest.json");
       if (fs.existsSync(manifestPath)) {
         // El manifiesto cambia con cada release: nunca servir una copia cacheada.
