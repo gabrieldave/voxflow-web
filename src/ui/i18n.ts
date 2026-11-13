@@ -51,6 +51,10 @@ export function initI18n() {
     if (!a) return;
     e.preventDefault();
     const next = a.dataset.lang as Locale;
+    // Preferencia manual: el servidor respeta esta cookie (EN | ES) por encima del país.
+    if (mode === "site") {
+      document.cookie = `voxflow-lang=${next}; Path=/; Max-Age=31536000; SameSite=Lax; Secure`;
+    }
     if (next === current) return;
     apply(next);
     if (mode === "site") history.pushState({ locale: next }, "", LOCALE_PATH[next] + location.hash);

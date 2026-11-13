@@ -118,6 +118,47 @@ function rateLimited(ip, max = 60, windowMs = 60000) {
 }
 function clientIp(req) { return (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown").toString().split(",")[0].trim(); }
 
+/* ---------- Geolocalización de idioma (CF-IPCountry → /es) ---------- */
+const SPANISH_COUNTRIES = new Set([
+  "MX", "ES", "AR", "CO", "CL", "PE", "EC", "VE", "UY", "PY", "BO",
+  "CR", "PA", "DO", "GT", "HN", "SV", "NI", "CU", "PR", "GQ",
+]);
+
+function cookies(req) {
+  const out = {};
+  for (const part of String(req.headers.cookie || "").split(";")) {
+    const i = part.indexOf("=");
+    if (i < 0) continue;
+    out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
+}
+
+function manualLang(req) {
+  const v = cookies(req)["voxflow-lang"];
+  return v === "en" || v === "es" ? v : "";
+}
+
+function countryFrom(req) {
+  const raw = req.headers["cf-ipcountry"] || req.headers["x-vercel-ip-country"] || req.headers["x-country"] || "";
+  const c = String(raw).trim().toUpperCase();
+  return !c || c === "XX" || c === "T1" ? "" : c;
+}
+
+function acceptsSpanish(req) {
+  return /(^|,)\s*es\b/i.test(String(req.headers["accept-language"] || ""));
+}
+
+function redirectLocalized(res, location) {
+  res.writeHead(302, {
+    location,
+    "cache-control": "private, no-cache, no-store, must-revalidate",
+    vary: "CF-IPCountry, Cookie",
+    "cdn-cache-control": "no-store",
+  });
+  res.end();
+}
+
 function sendJson(res, code, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(code, { "content-type": "application/json", "cache-control": "no-store" });
@@ -147,6 +188,11 @@ function serveStatic(req, res, pathname) {
   if (!file.startsWith(DIST)) return false;
   if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) return false;
   res.setHeader("content-type", MIME[path.extname(file)] || "application/octet-stream");
+  if (req.method === "HEAD") {
+    res.setHeader("content-length", String(fs.statSync(file).size));
+    res.end();
+    return true;
+  }
   fs.createReadStream(file).pipe(res);
   return true;
 }
@@ -365,6 +411,28 @@ const server = http.createServer(async (req, res) => {
       }
       const html = `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><title>VoxFlow Studio — Pago completado</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font-family:system-ui;max-width:640px;margin:60px auto;padding:0 20px"><h1>${lang === "en" ? "Payment successful" : "Pago completado"}</h1>${keyHtml}<p><a href="/api/download/latest">Descargar VoxFlowStudio-2.3.2.dmg / Download</a></p><ol><li>${lang==="en"?"Download the DMG":"Descarga el DMG"}</li><li>${lang==="en"?"Open VoxFlow Studio and paste the key":"Abre VoxFlow Studio y pega la clave"}</li><li>${lang==="en"?"Done — offline forever":"Listo — offline para siempre"}</li></ol></body></html>`;
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); return res.end(html);
+    }
+    // Idioma por país/cookie: "/" (inglés) y "/es/" (español).
+    // Nunca 301: la respuesta depende de CF-IPCountry y de la cookie.
+    if ((req.method === "GET" || req.method === "HEAD") && (p === "/" || p === "/es" || p === "/es/")) {
+      const lang = manualLang(req);
+      const country = countryFrom(req);
+      res.setHeader("vary", "CF-IPCountry, Cookie");
+
+      if (lang === "en") {
+        if (p !== "/") return redirectLocalized(res, "/");
+      } else if (lang === "es") {
+        if (p === "/") return redirectLocalized(res, "/es/");
+      } else {
+        // Prioridad 2: país real (Cloudflare) y, solo si viene vacío/XX/T1, accept-language.
+        const spanish = country ? SPANISH_COUNTRIES.has(country) : acceptsSpanish(req);
+        if (spanish && p === "/") return redirectLocalized(res, "/es/");
+      }
+
+      // HTML dependiente de geolocalización: no dejar que Cloudflare lo comparta entre países.
+      res.setHeader("cache-control", "private, no-cache, no-store, must-revalidate");
+      res.setHeader("cdn-cache-control", "no-store");
+      if (serveStatic(req, res, p)) return;
     }
     // Estáticos
     if (serveStatic(req, res, p)) return;
