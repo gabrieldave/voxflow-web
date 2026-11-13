@@ -145,7 +145,7 @@ const server = http.createServer(async (req, res) => {
       }
       return sendJson(res, 404, { error: "no release" });
     }
-    if (p === "/api/download/latest" && req.method === "GET") {
+    if (p === "/api/download/latest" && (req.method === "GET" || req.method === "HEAD")) {
       const dmg = path.join(RELEASES, "VoxFlowStudio-2.3.0.dmg");
       const fallback = path.join(RELEASES, "VoxFlowStudio-Installer.dmg");
       const f = fs.existsSync(dmg) ? dmg : fs.existsSync(fallback) ? fallback : null;
@@ -153,6 +153,7 @@ const server = http.createServer(async (req, res) => {
       res.setHeader("content-type", "application/x-apple-diskimage");
       res.setHeader("content-disposition", 'attachment; filename="VoxFlowStudio-2.3.0.dmg"');
       res.setHeader("cache-control", "public, max-age=86400");
+      if (req.method === "HEAD") { res.setHeader("content-length", String(fs.statSync(f).size)); return res.end(); }
       return fs.createReadStream(f).pipe(res);
     }
     if (p === "/api/checkout" && (req.method === "GET" || req.method === "POST")) {
@@ -168,18 +169,41 @@ const server = http.createServer(async (req, res) => {
       if (pool) {
         try { await pool.query("INSERT INTO orders(email,tier,max_devices,amount_cents,currency,status) VALUES($1,$2,$3,$4,'usd','pending')", [email || "checkout", plan.tier, plan.maxDevices, plan.price]); } catch {}
       }
+      const serviceId = tier;
       const payload = {
         appId: "voxflow", event: "payment.create_checkout_session",
-        tier, amountCents: plan.price, currency: "usd",
-        email: email || undefined,
-        successUrl: `${APP_URL}/pago/success?session_id={CHECKOUT_SESSION_ID}&lang=${locale}`,
-        cancelUrl: `${APP_URL}/#pricing`,
-        metadata: { appId: "voxflow", tier, lang: locale },
+        data: {
+          amount: plan.price / 100, currency: "usd",
+          serviceTitle: `VoxFlow Studio ${plan.tier}`, serviceId,
+          customerEmail: email || undefined,
+          successUrl: `${APP_URL}/pago/success?session_id={CHECKOUT_SESSION_ID}&lang=${locale}`,
+          cancelUrl: `${APP_URL}/#pricing`,
+          metadata: { appId: "voxflow", tier, lang: locale },
+        },
       };
-      const gw = await fetch(N8N_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
-      const gwData = await gw.json().catch(() => ({}));
-      const stripeUrl = gwData.url || gwData.checkoutUrl || gwData.checkout_url || null;
-      if (!gw.ok || !stripeUrl) return sendJson(res, 503, { error: "payment gateway unavailable", detail: gwData.error || "n8n payment gateway no configurado para voxflow" });
+      let stripeUrl = null;
+      try {
+        const gw = await fetch(N8N_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+        const gwData = await gw.json().catch(() => ({}));
+        stripeUrl = gwData?.data?.url || gwData?.url || gwData?.checkoutUrl || gwData?.checkout_url || null;
+      } catch {}
+      // Respaldo directo Stripe si el gateway n8n aún no tiene appId voxflow
+      if (!stripeUrl && process.env.STRIPE_SECRET_KEY) {
+        const form = new URLSearchParams();
+        form.set("mode", "payment");
+        form.set("success_url", `${APP_URL}/pago/success?session_id={CHECKOUT_SESSION_ID}&lang=${locale}`);
+        form.set("cancel_url", `${APP_URL}/#pricing`);
+        if (email) form.set("customer_email", email);
+        form.set("line_items[0][quantity]", "1");
+        form.set("line_items[0][price_data][currency]", "usd");
+        form.set("line_items[0][price_data][unit_amount]", String(plan.price));
+        form.set("line_items[0][price_data][product_data][name]", `VoxFlow Studio ${plan.tier}`);
+        form.set("metadata[appId]", "voxflow"); form.set("metadata[tier]", tier); form.set("metadata[lang]", locale);
+        const r = await fetch("https://api.stripe.com/v1/checkout/sessions", { method: "POST", headers: { Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}`, "content-type": "application/x-www-form-urlencoded" }, body: form.toString() });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok && j.url) stripeUrl = j.url;
+      }
+      if (!stripeUrl) return sendJson(res, 503, { error: "payment gateway unavailable", detail: "registra appId voxflow en Payment Gateway - Universal (n8n) o define STRIPE_SECRET_KEY" });
       if (req.method === "GET") { res.writeHead(303, { location: stripeUrl }); return res.end(); }
       return sendJson(res, 200, { url: stripeUrl });
     }
