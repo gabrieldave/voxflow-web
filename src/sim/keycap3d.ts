@@ -1,5 +1,5 @@
 /**
- * F5 keycap in Three.js. Renders at display rate only while something moves
+ * Fn (Globe) keycap in Three.js. Renders at display rate only while something moves
  * (press travel, LED, tilt), then stops the loop. Paused when off-screen.
  * Motion uses critically damped springs (Apple "response"/"damping" model);
  * the release gets a touch of bounce because it carries the key's momentum.
@@ -220,29 +220,53 @@ export class Keycap3D {
     const g = this.legendCanvas.getContext("2d")!;
     const s = 512;
     g.clearRect(0, 0, s, s);
-    g.fillStyle = "rgba(236,236,240,0.92)";
-    g.strokeStyle = "rgba(236,236,240,0.92)";
-    // mic glyph
+    const ink = "rgba(238,240,246,0.94)";
+    g.fillStyle = ink;
+    g.strokeStyle = ink;
+
+    // Apple Magic Keyboard layout: "fn" top-right + crisp wireframe Globe bottom-left
+    g.font = '600 84px "Plus Jakarta Sans", -apple-system, "Helvetica Neue", Arial, sans-serif';
+    g.textAlign = "right";
+    g.textBaseline = "top";
+    g.fillText("fn", s * 0.86, s * 0.11);
+
+    // Wireframe Globe (bottom-left)
     g.save();
-    g.translate(s / 2, s * 0.4);
-    g.lineWidth = 15;
+    g.translate(s * 0.33, s * 0.67);
+    const R = 104;
+    g.lineWidth = 11.5;
     g.lineCap = "round";
-    const r = 30;
+    g.lineJoin = "round";
+
+    // Outer circle
     g.beginPath();
-    g.roundRect(-r, -78, r * 2, 120, r);
-    g.fill();
-    g.beginPath();
-    g.arc(0, 2, 58, 0.1 * Math.PI, 0.9 * Math.PI);
+    g.arc(0, 0, R, 0, Math.PI * 2);
     g.stroke();
+
+    // Inner meridian ellipse
     g.beginPath();
-    g.moveTo(0, 62);
-    g.lineTo(0, 92);
+    g.ellipse(0, 0, R * 0.5, R, 0, 0, Math.PI * 2);
     g.stroke();
+
+    // Central vertical meridian & equator
+    g.beginPath();
+    g.moveTo(0, -R);
+    g.lineTo(0, R);
+    g.moveTo(-R, 0);
+    g.lineTo(R, 0);
+    g.stroke();
+
+    // Upper and lower latitude parallels
+    const latY = R * 0.52;
+    const latHalfW = Math.sqrt(R * R - latY * latY);
+    g.beginPath();
+    g.moveTo(-latHalfW, -latY);
+    g.lineTo(latHalfW, -latY);
+    g.moveTo(-latHalfW, latY);
+    g.lineTo(latHalfW, latY);
+    g.stroke();
+
     g.restore();
-    g.font = '600 78px "Plus Jakarta Sans", "Helvetica Neue", Arial, sans-serif';
-    g.textAlign = "center";
-    g.textBaseline = "alphabetic";
-    g.fillText("F5", s / 2, s * 0.86);
     this.legendMat.map!.needsUpdate = true;
   }
 

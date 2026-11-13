@@ -20,7 +20,7 @@ npm run build:preview  # one self-contained file → dist-preview/VoxFlow-Previe
 | `stripe.personal / pro / team` | Stripe Payment Links ($29 / $49 / $69) |
 | `n8n.trialWebhookUrl` | n8n webhook. Receives `POST {email, locale, plan:"trial", trialDays, source, page, referrer, ts}` |
 | `download.dmgUrl` / `fileName` | URL of the notarized `.dmg` |
-| `download.sha256` | `shasum -a 256 VoxFlowStudio-2.0.0.dmg` (left empty until the first notarized build) |
+| `download.sha256` | `shasum -a 256 VoxFlowStudio-2.4.0.dmg` (left empty until the first notarized build) |
 | `links.*` | Privacy, Terms, Contact |
 | `copy.en` / `copy.es` | Every string on the page, SEO title/description, OG |
 
@@ -47,7 +47,7 @@ While any URL still contains `REPLACE` or `example.com`, the download modal runs
 
 ## App screenshots (tour section)
 
-- Sources: `src/assets/screens/{en,es}-{flow,catalog,vocab,cv,studio,stats,license}.webp` (14 files,
+- Sources: `src/assets/screens/{en,es}-{flow,catalog,vocab,stats,license}.webp` (10 files,
   cropped to the window, rounded corners with alpha). The license email and ID are blurred.
 - `npm run prerender` copies them to `public/screens/` for the site build; the single-file preview inlines
   them through `src/screens-inline.ts`. The page language picks the EN or ES set.

@@ -1,12 +1,11 @@
 import { c, getLocale, onLocale, tr } from "./i18n";
 import { initChart } from "./chart";
-import { eqPath, fmtSigned, PRESETS } from "./studio";
 
 export function initBento(bus: EventTarget) {
   initMute(bus);
   initGuard();
   initCatalog(bus);
-  initStudio();
+  initVocab();
   const plot = document.querySelector<HTMLElement>("[data-chart]");
   if (plot) initChart(plot, getLocale, () => c().bento.stats.words);
 }
@@ -32,7 +31,6 @@ function initMute(bus: EventTarget) {
     fill.style.transform = `scaleX(${on ? 0 : saved / 100})`;
     num.textContent = `${on ? 0 : saved}%`;
     status.textContent = on ? tr("bento.mute.muted") : tr("bento.mute.restored", { v: saved });
-    // SystemAudioMuteService: save → mute + volume 0 → restore exact values → clear saved
     caMute.textContent = on ? "1" : "0";
     caVol.textContent = on ? "0.00" : (saved / 100).toFixed(2);
     caSaved.textContent = on ? (saved / 100).toFixed(2) : "nil";
@@ -79,9 +77,8 @@ function initGuard() {
   const out = cell.querySelector<HTMLElement>(".guard-out")!;
   const res = cell.querySelector<HTMLElement>(".guard-res")!;
   const btns = cell.querySelectorAll<HTMLButtonElement>("[data-scn]");
-  const SCALE = 2.4; // seconds shown on the track
+  const SCALE = 2.4;
   const DEADLINE = 1.6;
-  // Example finish times. Only the deadline is real.
   const scn = { fast: 0.42, slow: 2.1, chatty: 0.6 } as const;
   let current: keyof typeof scn = "fast";
   let raf = 0;
@@ -139,21 +136,31 @@ function initCatalog(bus: EventTarget) {
   );
 }
 
-/* Voice Studio presets with the real values from VoicePreset. */
-function initStudio() {
-  const cell = document.querySelector<HTMLElement>("#studio");
+/* Custom Phonetic Vocabulary: <1 ms alias & phonetic skeleton matcher. */
+function initVocab() {
+  const cell = document.querySelector<HTMLElement>("#vocab");
   if (!cell) return;
-  const path = cell.querySelector<SVGPathElement>(".eq-line")!;
-  const vw = cell.querySelector<HTMLElement>(".v-warmth")!;
-  const vp = cell.querySelector<HTMLElement>(".v-pitch")!;
-  const btns = cell.querySelectorAll<HTMLButtonElement>("[data-preset]");
+  const heard = cell.querySelector<HTMLElement>(".vocab-heard")!;
+  const fixed = cell.querySelector<HTMLElement>(".vocab-fixed")!;
+  const rule = cell.querySelector<HTMLElement>(".vocab-rule")!;
+  const btns = cell.querySelectorAll<HTMLButtonElement>("[data-voc]");
+  let current: "1" | "2" | "3" = "1";
+
+  const paint = (k: "1" | "2" | "3") => {
+    current = k;
+    const v = c().bento.vocab;
+    heard.textContent = v[`h${k}`];
+    fixed.textContent = v[`f${k}`];
+    rule.textContent = v[`r${k}`];
+  };
+
   btns.forEach((b) =>
     b.addEventListener("click", () => {
-      const p = PRESETS.find((x) => x.key === b.dataset.preset)!;
+      const k = (b.dataset.voc as "1" | "2" | "3") || "1";
       btns.forEach((x) => x.setAttribute("aria-checked", String(x === b)));
-      path.setAttribute("d", eqPath(p.warmth));
-      vw.textContent = fmtSigned(p.warmth, " dB");
-      vp.textContent = fmtSigned(p.pitch, " ct");
+      paint(k);
     })
   );
+  onLocale(() => paint(current));
+  paint("1");
 }

@@ -54,7 +54,7 @@ body::after {
   transition: opacity 260ms ease, translate 420ms var(--ease-out), filter 320ms ease;
 }
 
-/* Active line while holding F5: cleaner, brighter metal + a small optical step forward */
+/* Active line while holding Fn: cleaner, brighter metal + a small optical step forward */
 .hero h1[data-phase="hold"] [data-line="1"],
 .hero h1[data-phase="talk"] [data-line="2"],
 .hero h1[data-phase="letgo"] [data-line="3"],

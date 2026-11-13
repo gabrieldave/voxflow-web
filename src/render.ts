@@ -5,7 +5,6 @@
  */
 import { copy, funnel, LOCALE_PATH, type Copy, type Locale } from "./config/funnel";
 import { chartSVG, chartTable } from "./ui/chart";
-import { eqSVG, fmtSigned, PRESETS, ROOM_WET } from "./ui/studio";
 
 export type RenderMode = "site" | "single";
 
@@ -51,6 +50,7 @@ export function renderPage(locale: Locale, mode: RenderMode): string {
   const check = `<svg class="ico-check" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   const mark = `<svg class="brand-mark" viewBox="0 0 28 28" aria-hidden="true"><rect x="0.5" y="0.5" width="27" height="27" rx="7.5" fill="#16161A" stroke="rgba(255,255,255,.14)"/><g stroke="#E9E9EC" stroke-width="2" stroke-linecap="round"><path d="M8 12v4"/><path d="M11.5 9v10"/><path d="M15 11v6"/><path d="M18.5 7.5v13"/><path d="M22 12v4"/></g></svg>`;
   const mic = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0v-5a3 3 0 0 0-3-3Z" fill="currentColor"/><path d="M6.5 11a5.5 5.5 0 0 0 11 0M12 16.5V20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
+  const globe = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6"/><ellipse cx="12" cy="12" rx="4.2" ry="8.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3.8 12h16.4M5.2 8.2h13.6M5.2 15.8h13.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`;
   const stop = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/></svg>`;
 
   const models = [
@@ -61,13 +61,12 @@ export function renderPage(locale: Locale, mode: RenderMode): string {
     { id: "appleSpeech", name: "Apple Speech", size: "0 MB", d: "bento.catalog.m5" },
   ];
 
-  const p2 = PRESETS[1];
   const sha = funnel.download.sha256;
 
-  // The single-file preview entry inlines all 14 screenshots before booting main.ts.
+  // The single-file preview entry inlines all 10 screenshots before booting main.ts.
   const scriptTag = `<script type="module" src="/src/${mode === "single" ? "preview-entry" : "main"}.ts"></script>`;
 
-  const shots = ["flow", "catalog", "vocab", "cv", "studio", "stats", "license"] as const;
+  const shots = ["flow", "catalog", "vocab", "stats", "license"] as const;
   const shotSrc = (l: Locale, k: string) => `/screens/${l}-${k}.webp`;
 
   return `<!doctype html>
@@ -212,7 +211,7 @@ ${
     <div class="deck">
       <button class="keycap" type="button" aria-describedby="sim-hint" aria-label="${esc(t("sim.keyLabel"))}" data-i18n-attr="aria-label:sim.keyLabel">
         <canvas class="keycap-canvas" aria-hidden="true"></canvas>
-        <span class="keycap-fallback" aria-hidden="true"><span class="kf-ico">${mic}</span><span>F5</span></span>
+        <span class="keycap-fallback" aria-hidden="true"><span class="kf-ico">${globe}</span><span>fn</span></span>
       </button>
       <div class="deck-side">
         <p id="sim-hint" class="hint" data-i18n="sim.hint">${t("sim.hint")}</p>
@@ -347,41 +346,22 @@ ${
       </ul>
     </article>
 
-    <article class="cell cell-interview" id="interview">
+    <article class="cell cell-vocab" id="vocab">
       <div class="cell-text">
-        <div class="cell-title-row">${T("h3", "bento.interview.title")}<span class="badge" data-i18n="bento.pro">${t("bento.pro")}</span></div>
-        ${T("p", "bento.interview.body")}
+        ${T("h3", "bento.vocab.title")}
+        ${T("p", "bento.vocab.body")}
       </div>
-      <div class="convo">
-        <div class="turn turn-q"><span class="turn-who" data-i18n="bento.interview.asks">${t("bento.interview.asks")}</span>${T("p", "bento.interview.q")}</div>
-        <div class="turn turn-a"><span class="turn-who" data-i18n="bento.interview.you">${t("bento.interview.you")}</span>${T("p", "bento.interview.a")}</div>
-        <div class="turn turn-out">
-          <span class="turn-who" data-i18n="bento.interview.saved">${t("bento.interview.saved")}</span>
-          <p><span class="lang-tag mono" data-i18n="bento.interview.lang1">${t("bento.interview.lang1")}</span> <span data-i18n="bento.interview.bullet1">${t("bento.interview.bullet1")}</span></p>
-          <p><span class="lang-tag mono" data-i18n="bento.interview.lang2">${t("bento.interview.lang2")}</span> <span data-i18n="bento.interview.bullet2">${t("bento.interview.bullet2")}</span></p>
-        </div>
-        <ul class="files mono"><li>CV_ATS_English.pdf</li><li>CV_ATS_Espanol.pdf</li><li>CV_ATS_English.md</li><li>CV_ATS_Espanol.md</li></ul>
+      <div class="seg" role="radiogroup" aria-label="${esc(t("bento.vocab.title"))}" data-i18n-attr="aria-label:bento.vocab.title">
+        <button type="button" role="radio" aria-checked="true" data-voc="1" data-i18n="bento.vocab.s1">${t("bento.vocab.s1")}</button>
+        <button type="button" role="radio" aria-checked="false" data-voc="2" data-i18n="bento.vocab.s2">${t("bento.vocab.s2")}</button>
+        <button type="button" role="radio" aria-checked="false" data-voc="3" data-i18n="bento.vocab.s3">${t("bento.vocab.s3")}</button>
       </div>
-    </article>
-
-    <article class="cell cell-studio" id="studio">
-      <div class="cell-text">
-        <div class="cell-title-row">${T("h3", "bento.studio.title")}<span class="badge" data-i18n="bento.pro">${t("bento.pro")}</span></div>
-        ${T("p", "bento.studio.body")}
-      </div>
-      <div class="seg seg-presets" role="radiogroup" aria-label="${esc(t("bento.studio.presetsLabel"))}" data-i18n-attr="aria-label:bento.studio.presetsLabel">
-        ${PRESETS.map((p) => `<button type="button" role="radio" aria-checked="${p.key === "p2"}" data-preset="${p.key}" data-i18n="bento.studio.${p.key}">${t(`bento.studio.${p.key}`)}</button>`).join("")}
-      </div>
-      <div class="eq-wrap">${eqSVG(p2.warmth, t("bento.studio.curve"))}</div>
-      <ol class="chain mono">
-        <li><span data-i18n="bento.studio.hpf">${t("bento.studio.hpf")}</span><b>85 Hz</b></li>
-        <li><span data-i18n="bento.studio.body180">${t("bento.studio.body180")}</span><b class="v-warmth">${fmtSigned(p2.warmth, " dB")}</b></li>
-        <li><span data-i18n="bento.studio.presence">${t("bento.studio.presence")}</span><b>+3 dB</b></li>
-        <li><span data-i18n="bento.studio.pitch">${t("bento.studio.pitch")}</span><b class="v-pitch">${fmtSigned(p2.pitch, " ct")}</b></li>
-        <li><span data-i18n="bento.studio.room">${t("bento.studio.room")}</span><b>${ROOM_WET}%</b></li>
-        <li><span data-i18n="bento.studio.out">${t("bento.studio.out")}</span><b>BlackHole 2ch</b></li>
-      </ol>
-      ${T("p", "bento.studio.note", 'class="fine"')}
+      <dl class="guard-io vocab-io">
+        <div><dt data-i18n="bento.vocab.heard">${t("bento.vocab.heard")}</dt><dd class="mono vocab-heard">${t("bento.vocab.h1")}</dd></div>
+        <div><dt data-i18n="bento.vocab.fixed">${t("bento.vocab.fixed")}</dt><dd class="mono vocab-fixed">${t("bento.vocab.f1")}</dd></div>
+        <div><dt data-i18n="bento.vocab.rule">${t("bento.vocab.rule")}</dt><dd class="mono vocab-rule">${t("bento.vocab.r1")}</dd></div>
+      </dl>
+      ${T("p", "bento.vocab.note", 'class="fine"')}
     </article>
 
     <article class="cell cell-stats" id="stats">
@@ -425,16 +405,16 @@ ${
   </div>
   <div class="ps-grid">
     <article class="ps-card">
-      ${T("span", "pro.cvTag", 'class="ps-eyebrow mono"')}
-      ${T("h3", "pro.cvTitle")}
-      ${T("p", "pro.cvBody")}
-      <ul class="ps-list">${[1, 2, 3].map((n) => `<li>${check}${T("span", `pro.cv${n}`)}</li>`).join("")}</ul>
+      ${T("span", "pro.p1Tag", 'class="ps-eyebrow mono"')}
+      ${T("h3", "pro.p1Title")}
+      ${T("p", "pro.p1Body")}
+      <ul class="ps-list">${[1, 2, 3].map((n) => `<li>${check}${T("span", `pro.p1_${n}`)}</li>`).join("")}</ul>
     </article>
     <article class="ps-card is-hot">
-      ${T("span", "pro.vsTag", 'class="ps-eyebrow mono"')}
-      ${T("h3", "pro.vsTitle")}
-      ${T("p", "pro.vsBody")}
-      <ul class="ps-list">${[1, 2, 3].map((n) => `<li>${check}${T("span", `pro.vs${n}`)}</li>`).join("")}</ul>
+      ${T("span", "pro.p2Tag", 'class="ps-eyebrow mono"')}
+      ${T("h3", "pro.p2Title")}
+      ${T("p", "pro.p2Body")}
+      <ul class="ps-list">${[1, 2, 3].map((n) => `<li>${check}${T("span", `pro.p2_${n}`)}</li>`).join("")}</ul>
     </article>
   </div>
   <div class="ps-cta">
@@ -458,8 +438,8 @@ ${
             ["Three", true],
             ["Privacy", false],
             ["Dictionary", false],
-            ["CV", false],
-            ["Stream", false],
+            ["Translate", false],
+            ["Clipboard", false],
             ["Trial", false],
           ] as const
         )

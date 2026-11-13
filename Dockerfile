@@ -1,4 +1,4 @@
-# VoxFlow Studio 2.3.0 — Node server (estatico + API Postgres/Stripe/n8n)
+# VoxFlow Studio 2.4.0 — Node server (estatico + API Postgres/Stripe/n8n)
 FROM node:22-alpine AS build
 WORKDIR /app
 ARG SITE_URL=https://voxflow.iareal.net

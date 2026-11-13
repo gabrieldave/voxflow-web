@@ -967,10 +967,9 @@ code {
 }
 
 .cell-mute,
-.cell-guard { grid-column: span 3; }
+.cell-guard,
 .cell-catalog,
-.cell-interview,
-.cell-studio { grid-column: span 2; }
+.cell-vocab { grid-column: span 3; }
 .cell-stats {
   grid-column: span 6;
   display: grid;
@@ -2020,11 +2019,9 @@ code {
   .cell-mute,
   .cell-guard,
   .cell-catalog,
-  .cell-interview,
-  .cell-studio {
+  .cell-vocab {
     grid-column: span 1;
   }
-  .cell-catalog { grid-column: span 2; }
   .cell-stats {
     grid-column: span 2;
   }
@@ -2052,8 +2049,7 @@ code {
   .cell-mute,
   .cell-guard,
   .cell-catalog,
-  .cell-interview,
-  .cell-studio,
+  .cell-vocab,
   .cell-stats {
     grid-column: span 1;
   }
@@ -2197,7 +2193,7 @@ code {
   .win-body { min-height: 0; }
 }
 
-/* ---------- F5 keycap: nunca debe ocultarse al pulsarla en móvil ---------- */
+/* ---------- Fn keycap: nunca debe ocultarse al pulsarla en móvil ---------- */
 /* Blindaje contra :active, selección nativa iOS, menú contextual y scroll fantasma. */
 .keycap,
 .keycap:active,
@@ -2323,4 +2319,19 @@ code {
   .pro-suite .ps-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* Custom Phonetic Vocabulary Bento Card */
+.vocab-io .vocab-heard {
+  color: var(--ink-3);
+  text-decoration: line-through;
+  text-decoration-color: rgba(255, 255, 255, 0.28);
+}
+.vocab-io .vocab-fixed {
+  color: var(--ok);
+  font-weight: 500;
+}
+.vocab-io .vocab-rule {
+  color: var(--ink-2);
+  font-size: 0.76rem;
 }

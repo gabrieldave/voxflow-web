@@ -16,7 +16,7 @@ const N8N_URL = (process.env.N8N_PAYMENT_URL || "https://n8n.vibesystems.tech/we
 const N8N_EMAIL_URL = (process.env.N8N_EMAIL_URL || "https://n8n.vibesystems.tech/webhook/email/send").replace(/\/$/, "");
 const EMAIL_FROM = process.env.EMAIL_FROM || "VoxFlow Studio <soporte@voxflow.iareal.net>";
 const DB_URL = process.env.DATABASE_URL || process.env.APP_VOXFLOW_DATABASE_URL || "";
-const VERSION = "2.3.4";
+const VERSION = "2.4.0";
 
 const PLANS = {
   personal: { tier: "Personal", price: 2900, maxDevices: 1 },
@@ -230,12 +230,26 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 404, { error: "no release" });
     }
     if (p === "/api/download/latest" && (req.method === "GET" || req.method === "HEAD")) {
-      const candidates = [
-        path.join(RELEASES, "VoxFlowStudio-2.3.4.dmg"),
-        path.join(RELEASES, "VoxFlowStudio-2.3.2.dmg"),
-        path.join(RELEASES, "VoxFlowStudio-Installer.dmg"),
-      ];
-      const f = candidates.find((c) => fs.existsSync(c)) || null;
+      const dynamicCandidates = [];
+      const manifestPath = path.join(RELEASES, "latest.json");
+      if (fs.existsSync(manifestPath)) {
+        try {
+          const mf = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+          if (mf?.fileName) dynamicCandidates.push(path.join(RELEASES, path.basename(mf.fileName)));
+          if (mf?.version) dynamicCandidates.push(path.join(RELEASES, `VoxFlowStudio-${mf.version}.dmg`));
+        } catch {}
+      }
+      dynamicCandidates.push(path.join(RELEASES, `VoxFlowStudio-${VERSION}.dmg`));
+      if (fs.existsSync(RELEASES)) {
+        const dmgs = fs
+          .readdirSync(RELEASES)
+          .filter((n) => /^VoxFlowStudio-.*\.dmg$/i.test(n))
+          .map((n) => path.join(RELEASES, n))
+          .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+        dynamicCandidates.push(...dmgs);
+      }
+      dynamicCandidates.push(path.join(RELEASES, "VoxFlowStudio-Installer.dmg"));
+      const f = dynamicCandidates.find((c) => fs.existsSync(c)) || null;
       if (!f) return sendJson(res, 404, { error: "dmg not published" });
       const fileName = path.basename(f);
       res.setHeader("content-type", "application/x-apple-diskimage");

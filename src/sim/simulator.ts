@@ -264,7 +264,7 @@ export function initSimulator(root: HTMLElement, bus: EventTarget) {
     keycap?.setPressed(false);
     keyBtn.classList.remove("is-down");
     setH1("letgo");
-    addRow({ mark: "F5", key: "sim.tl.held", vars: { ms: held } });
+    addRow({ mark: "Fn 🌐", key: "sim.tl.held", vars: { ms: held } });
 
     later(TAIL_MS, () => {
       const peak = meter.peak;
@@ -319,12 +319,13 @@ export function initSimulator(root: HTMLElement, bus: EventTarget) {
   }
 
   /* ---------------- Input bindings ---------------- */
-  const isF5 = (e: KeyboardEvent) => e.key === "F5" || e.code === "F5";
+  const isTriggerKey = (e: KeyboardEvent) =>
+    e.key === "Fn" || e.code === "Fn" || e.key === "F5" || e.code === "F5";
   const typing = (e: Event) => (e.target as HTMLElement)?.closest("input, textarea, [contenteditable], dialog[open]");
 
   window.addEventListener("keydown", (e) => {
-    if (isF5(e)) {
-      e.preventDefault(); // F5 would reload the page
+    if (isTriggerKey(e)) {
+      if (e.key === "F5" || e.code === "F5") e.preventDefault();
       if (typing(e)) return;
       if (!e.repeat) void press();
     } else if ((e.key === " " || e.key === "Enter") && document.activeElement === keyBtn) {
@@ -333,8 +334,8 @@ export function initSimulator(root: HTMLElement, bus: EventTarget) {
     }
   });
   window.addEventListener("keyup", (e) => {
-    if (isF5(e) || ((e.key === " " || e.key === "Enter") && document.activeElement === keyBtn)) {
-      e.preventDefault();
+    if (isTriggerKey(e) || ((e.key === " " || e.key === "Enter") && document.activeElement === keyBtn)) {
+      if (e.key === "F5" || e.code === "F5") e.preventDefault();
       release();
     }
   });
