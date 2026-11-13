@@ -322,33 +322,104 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === "/api/license/activate" && req.method === "POST") {
       if (rateLimited(ip, 30)) return sendJson(res, 429, { error: "too many requests" });
-      const { licenseKey, hardwareHash, chip, appVersion } = JSON.parse(await readBody(req));
+      const { licenseKey, hardwareHash, chip, appVersion } = JSON.parse((await readBody(req)) || "{}");
       const pub = process.env.VOXFLOW_ED25519_PUBLIC_KEY;
       if (!pub || !licenseKey || !hardwareHash) return sendJson(res, 400, { error: "missing fields" });
       const payload = verifyToken(licenseKey, pub);
       if (!payload || payload.product !== "com.blackeye.voxflowstudio") return sendJson(res, 401, { error: "invalid license signature" });
-      if (pool) {
-        const { rows } = await pool.query("SELECT COUNT(*)::int c FROM license_activations WHERE license_id=$1", [payload.licenseId]);
-        const used = rows[0].c;
-        const { rows: existing } = await pool.query("SELECT * FROM license_activations WHERE license_id=$1 AND hardware_hash=$2", [payload.licenseId, hardwareHash]);
-        if (existing.length === 0 && used >= payload.maxDevices) {
-          return sendJson(res, 409, { error: "seat limit reached", message: `Límite de Macs alcanzado (${used}/${payload.maxDevices}). Desvincula la Mac anterior.` });
+      if (!pool) return sendJson(res, 503, { error: "database unavailable" });
+
+      // Claves emitidas por CLI (p.ej. Founder BE-21A37127) se indexan en `orders`
+      // la primera vez que se activan, para que aparezcan siempre en /admin.
+      await pool.query(
+        `INSERT INTO orders(email,tier,max_devices,amount_cents,currency,status,license_id,license_token,paid_at)
+         SELECT $1,$2,$3,0,'usd','paid',$4,$5,NOW()
+          WHERE NOT EXISTS (SELECT 1 FROM orders WHERE license_id=$4)`,
+        [payload.email, payload.tier, payload.maxDevices, payload.licenseId, String(licenseKey).trim()]
+      ).catch(() => {});
+
+      const { rows: existing } = await pool.query(
+        "SELECT id FROM license_activations WHERE license_id=$1 AND hardware_hash=$2",
+        [payload.licenseId, hardwareHash]
+      );
+      if (existing.length === 0) {
+        const { rows: usedRows } = await pool.query(
+          "SELECT COUNT(*)::int c FROM license_activations WHERE license_id=$1",
+          [payload.licenseId]
+        );
+        const used = usedRows[0].c;
+        if (used >= payload.maxDevices) {
+          return sendJson(res, 409, {
+            error: "seat limit reached",
+            message: `Límite de Macs alcanzado (${used}/${payload.maxDevices}). Desvincula la Mac anterior.`,
+            seatsUsed: used,
+            maxDevices: payload.maxDevices,
+          });
         }
-        await pool.query("INSERT INTO license_activations(license_id,email,tier,max_devices,hardware_hash,device_name,app_version,last_seen_at) VALUES($1,$2,$3,$4,$5,$6,$7,NOW()) ON CONFLICT(license_id,hardware_hash) DO UPDATE SET last_seen_at=NOW(), app_version=$7", [payload.licenseId, payload.email, payload.tier, payload.maxDevices, hardwareHash, chip || "", appVersion || ""]);
-        const { rows: c2 } = await pool.query("SELECT COUNT(*)::int c FROM license_activations WHERE license_id=$1", [payload.licenseId]);
-        const receipt = signReceipt({ licenseId: payload.licenseId, hardwareHash, tier: payload.tier, maxDevices: payload.maxDevices, email: payload.email, product: "com.blackeye.voxflowstudio" });
-        return sendJson(res, 200, { ok: true, activationReceipt: receipt, occupiedSeats: c2[0].c });
       }
-      return sendJson(res, 503, { error: "database unavailable" });
+
+      await pool.query(
+        `INSERT INTO license_activations(license_id,email,tier,max_devices,hardware_hash,device_name,app_version,last_seen_at)
+         VALUES($1,$2,$3,$4,$5,$6,$7,NOW())
+         ON CONFLICT (license_id, hardware_hash) DO UPDATE
+           SET last_seen_at = NOW(),
+               device_name = EXCLUDED.device_name,
+               app_version = EXCLUDED.app_version`,
+        [payload.licenseId, payload.email, payload.tier, payload.maxDevices, hardwareHash, chip || "", appVersion || ""]
+      );
+      const { rows: c2 } = await pool.query(
+        "SELECT COUNT(*)::int c FROM license_activations WHERE license_id=$1",
+        [payload.licenseId]
+      );
+      const seatsUsed = c2[0].c;
+      const receipt = signReceipt({ licenseId: payload.licenseId, hardwareHash, tier: payload.tier, maxDevices: payload.maxDevices, email: payload.email, product: "com.blackeye.voxflowstudio" });
+      return sendJson(res, 200, {
+        ok: true,
+        seatsUsed,
+        occupiedSeats: seatsUsed,
+        maxDevices: payload.maxDevices,
+        licenseId: payload.licenseId,
+        tier: payload.tier,
+        email: payload.email,
+        activationReceipt: receipt,
+      });
+    }
+    if (p === "/api/license/status" && req.method === "POST") {
+      if (rateLimited(ip, 45)) return sendJson(res, 429, { error: "too many requests" });
+      const { licenseKey, hardwareHash } = JSON.parse((await readBody(req)) || "{}");
+      const pub = process.env.VOXFLOW_ED25519_PUBLIC_KEY;
+      const payload = pub && licenseKey ? verifyToken(licenseKey, pub) : null;
+      if (!payload) return sendJson(res, 401, { error: "invalid license signature" });
+      if (!pool) return sendJson(res, 503, { error: "database unavailable" });
+      const { rows: c } = await pool.query("SELECT COUNT(*)::int c FROM license_activations WHERE license_id=$1", [payload.licenseId]);
+      let activeHere = false;
+      if (hardwareHash) {
+        const { rows: own } = await pool.query(
+          "SELECT 1 FROM license_activations WHERE license_id=$1 AND hardware_hash=$2",
+          [payload.licenseId, hardwareHash]
+        );
+        activeHere = own.length > 0;
+      }
+      return sendJson(res, 200, {
+        ok: true,
+        seatsUsed: c[0].c,
+        maxDevices: payload.maxDevices,
+        licenseId: payload.licenseId,
+        tier: payload.tier,
+        email: payload.email,
+        activeOnThisDevice: activeHere,
+      });
     }
     if (p === "/api/license/deactivate" && req.method === "POST") {
       if (rateLimited(ip, 30)) return sendJson(res, 429, { error: "too many requests" });
-      const { licenseKey, hardwareHash } = JSON.parse(await readBody(req));
+      const { licenseKey, hardwareHash } = JSON.parse((await readBody(req)) || "{}");
       const pub = process.env.VOXFLOW_ED25519_PUBLIC_KEY;
       const payload = pub && licenseKey ? verifyToken(licenseKey, pub) : null;
       if (!payload || !hardwareHash) return sendJson(res, 401, { error: "invalid license" });
-      if (pool) await pool.query("DELETE FROM license_activations WHERE license_id=$1 AND hardware_hash=$2", [payload.licenseId, hardwareHash]);
-      return sendJson(res, 200, { ok: true });
+      if (!pool) return sendJson(res, 503, { error: "database unavailable" });
+      await pool.query("DELETE FROM license_activations WHERE license_id=$1 AND hardware_hash=$2", [payload.licenseId, hardwareHash]);
+      const { rows: c } = await pool.query("SELECT COUNT(*)::int c FROM license_activations WHERE license_id=$1", [payload.licenseId]);
+      return sendJson(res, 200, { ok: true, seatsUsed: c[0].c, maxDevices: payload.maxDevices, licenseId: payload.licenseId, tier: payload.tier, email: payload.email });
     }
     if (p === "/api/trial/start" && req.method === "POST") {
       if (rateLimited(ip, 20)) return sendJson(res, 429, { error: "too many requests" });
