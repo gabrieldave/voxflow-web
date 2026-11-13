@@ -7,31 +7,34 @@ services:
       args:
         SITE_URL: https://voxflow.iareal.net
     ports:
-      - "127.0.0.1:3049:80"
+      - "127.0.0.1:3049:8080"
     networks:
       - coolify
     read_only: true
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=96m
-      - /var/cache/nginx:rw,noexec,nosuid,size=32m
-      - /var/run:rw,noexec,nosuid,size=8m
+      - /tmp:rw,noexec,nosuid,size=128m
+      - /dev/shm:rw,noexec,nosuid,size=32m
     security_opt:
       - no-new-privileges:true
     cap_drop:
-      - NET_RAW
-      - SYS_ADMIN
-      - SYS_PTRACE
+      - ALL
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 20s
     deploy:
       resources:
         limits:
-          memory: 128M
-          cpus: "0.25"
+          memory: 512M
+          cpus: "0.5"
+    volumes:
+      - voxflow_storage:/app/storage
+
+volumes:
+  voxflow_storage:
+    driver: local
 
 networks:
   coolify:

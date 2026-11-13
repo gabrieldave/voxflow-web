@@ -21,13 +21,13 @@ const env = (key: string): string | undefined =>
 export const funnel = {
   product: {
     name: "VoxFlow Studio",
-    version: "2.2.0",
+    version: "2.3.0",
     company: "BLACK EYE",
     bundleId: "com.blackeye.voxflowstudio",
   },
 
   /** Public origin, used for canonical, hreflang, sitemap and Open Graph. Set SITE_URL at build time. */
-  siteUrl: (env("SITE_URL") ?? "https://www.example.com").replace(/\/$/, ""),
+  siteUrl: (env("SITE_URL") ?? "https://voxflow.iareal.net").replace(/\/$/, ""),
 
   trust: {
     appleTeamId: "YH6W55MP95",
@@ -38,24 +38,24 @@ export const funnel = {
 
   download: {
     /** Absolute or root-relative URL of the notarized .dmg */
-    dmgUrl: "/downloads/VoxFlowStudio-2.2.0.dmg",
-    /** shasum -a 256 VoxFlowStudio-2.2.0.dmg — leave empty until the first notarized build exists */
+    dmgUrl: "/api/download/latest",
+    /** shasum -a 256 VoxFlowStudio-2.3.0.dmg — leave empty until the first notarized build exists */
     sha256: "",
-    fileName: "VoxFlowStudio-2.2.0.dmg",
+    fileName: "VoxFlowStudio-2.3.0.dmg",
   },
 
   trialDays: 14,
 
   n8n: {
     /** POST {email, locale, source, plan:"trial", ts, page} as JSON */
-    trialWebhookUrl: "https://n8n.example.com/webhook/voxflow-trial",
-    timeoutMs: 4000,
+    trialWebhookUrl: "/api/trial/start",
+    timeoutMs: 15000,
   },
 
   stripe: {
-    personal: "https://buy.stripe.com/REPLACE_PERSONAL",
-    pro: "https://buy.stripe.com/REPLACE_PRO",
-    team: "https://buy.stripe.com/REPLACE_TEAM",
+    personal: "/api/checkout?tier=personal",
+    pro: "/api/checkout?tier=pro",
+    team: "/api/checkout?tier=team",
   },
 
   plans: [

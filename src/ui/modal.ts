@@ -10,6 +10,16 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 export function initModal() {
   const dlg = document.querySelector<HTMLDialogElement>("#download");
   if (!dlg) return;
+  // SHA-256 dinámico desde el manifiesto firmado
+  fetch("/api/updates/latest")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j) => {
+      const sha = j?.sha256 as string | undefined;
+      if (!sha) return;
+      const dd = dlg.querySelector(".verify .sha");
+      if (dd) dd.textContent = sha;
+    })
+    .catch(() => undefined);
   const form = dlg.querySelector<HTMLFormElement>("form")!;
   const input = form.querySelector<HTMLInputElement>('input[name="email"]')!;
   const err = form.querySelector<HTMLElement>(".field-err")!;
