@@ -209,7 +209,7 @@ export function createAdmin(ctx) {
 
     // ---------- /admin ----------
     if (p === "/admin" || p === "/admin/") {
-      if (req.method !== "GET") return deny(res, 405, "method not allowed");
+      if (req.method !== "GET" && req.method !== "HEAD") return deny(res, 405, "method not allowed");
       res.setHeader("cache-control", "no-store");
       res.setHeader("x-frame-options", "DENY");
       res.setHeader(
