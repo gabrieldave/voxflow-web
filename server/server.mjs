@@ -16,7 +16,7 @@ const N8N_URL = (process.env.N8N_PAYMENT_URL || "https://n8n.vibesystems.tech/we
 const N8N_EMAIL_URL = (process.env.N8N_EMAIL_URL || "https://n8n.vibesystems.tech/webhook/email/send").replace(/\/$/, "");
 const EMAIL_FROM = process.env.EMAIL_FROM || "VoxFlow Studio <voxflow@iareal.net>";
 const DB_URL = process.env.DATABASE_URL || process.env.APP_VOXFLOW_DATABASE_URL || "";
-const VERSION = "2.4.1";
+const VERSION = "2.4.2";
 
 const PLANS = {
   personal: { tier: "Personal", price: 2900, maxDevices: 1 },
