@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28" role="img" aria-labelledby="title">
+  <title id="title">VoxFlow Studio</title>
+  <rect x="0.5" y="0.5" width="27" height="27" rx="7.5" fill="#16161A" stroke="#FFFFFF" stroke-opacity="0.14"/>
+  <g fill="none" stroke="#E9E9EC" stroke-width="2" stroke-linecap="round">
+    <path d="M8 12v4"/>
+    <path d="M11.5 9v10"/>
+    <path d="M15 11v6"/>
+    <path d="M18.5 7.5v13"/>
+    <path d="M22 12v4"/>
+  </g>
+</svg>
