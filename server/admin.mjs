@@ -9,6 +9,10 @@ const SESSION_COOKIE = "vfs_admin";
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const STATE_TTL_MS = 10 * 60 * 1000;
 
+// Capa 5: allow-list cerrada y Client ID oficial (fail-closed, sin depender de env).
+const REQUIRED_CLIENT_ID = "1091222021847-ph8k6rbvkpkk9gf1j41v6hiiqje6vnlc.apps.googleusercontent.com";
+const REQUIRED_ADMIN_EMAIL = "david.del.rio.colin@gmail.com";
+
 const PLAN_OPTIONS = {
   personal: { tier: "Personal", price: 2900, maxDevices: 1, label: "Personal · 1 Mac — $29" },
   pro: { tier: "Pro", price: 4900, maxDevices: 3, label: "Pro Studio · 3 Macs — $49" },
@@ -67,21 +71,18 @@ function escapeHtml(s) {
 
 export function createAdmin(ctx) {
   const { pool, appUrl, n8nEmailUrl, emailFrom, version, signLicense, sendJson, readBody } = ctx;
+  const { encryptKey, decryptKey, rebuildToken } = ctx;
 
-  const clientId = (process.env.GOOGLE_CLIENT_ID || process.env.AUTH_GOOGLE_ID || "").trim();
+  const clientId = REQUIRED_CLIENT_ID;
   const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || process.env.AUTH_GOOGLE_SECRET || "").trim();
-  const sessionSecret = (process.env.AUTH_SECRET || process.env.ADMIN_SESSION_SECRET || "").trim();
-  const allowedEmails = (process.env.ADMIN_ALLOWED_EMAILS || process.env.ADMIN_EMAIL || "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
+  const sessionSecret = (process.env.AUTH_SECRET || process.env.ADMIN_SESSION_SECRET || process.env.SESSION_SECRET || "").trim();
+  // Capa 5: exclusivamente el CEO, verificado por Google (email_verified).
+  const allowedEmails = [REQUIRED_ADMIN_EMAIL];
 
   const redirectUri = `${appUrl}/api/auth/callback/google`;
   const missing = [];
-  if (!clientId) missing.push("GOOGLE_CLIENT_ID");
   if (!clientSecret) missing.push("GOOGLE_CLIENT_SECRET");
   if (!sessionSecret) missing.push("AUTH_SECRET");
-  if (!allowedEmails.length) missing.push("ADMIN_ALLOWED_EMAILS");
   if (!pool) missing.push("DATABASE_URL");
   const configured = missing.length === 0;
 
@@ -145,6 +146,72 @@ export function createAdmin(ctx) {
     }
   }
 
+  // ---------- Capa 5: bóveda AES-256-GCM por `:id` ----------
+  const LICENSE_COLUMNS = `id, email, tier, max_devices, amount_cents, status, license_id,
+                           license_token, encrypted_key, COALESCE(paid_at, created_at) AS issued_at`;
+
+  async function resolveLicenseRow(idOrLicenseId) {
+    const key = String(idOrLicenseId || "").trim();
+    if (!key) return null;
+    const { rows } = await pool.query(
+      `SELECT ${LICENSE_COLUMNS} FROM orders
+        WHERE license_id = $1 OR id::text = $1
+        ORDER BY COALESCE(paid_at, created_at) DESC
+        LIMIT 1`,
+      [key]
+    );
+    return rows[0] || null;
+  }
+
+  /** Descifra `encrypted_key`; si falta, cifra la clave existente o la reconstruye. */
+  async function licenseTokenFor(row) {
+    if (!row) return null;
+    if (row.encrypted_key && decryptKey) {
+      const plain = decryptKey(row.encrypted_key);
+      if (plain) return plain;
+    }
+    const stored = String(row.license_token || "").trim();
+    if (stored.startsWith("VFS1.")) {
+      if (encryptKey) {
+        const enc = encryptKey(stored);
+        if (enc) await pool.query("UPDATE orders SET encrypted_key=$1 WHERE id=$2", [enc, row.id]);
+      }
+      return stored;
+    }
+    if (rebuildToken) {
+      const rebuilt = rebuildToken(row);
+      if (rebuilt?.token) {
+        const enc = encryptKey ? encryptKey(rebuilt.token) : null;
+        await pool.query(
+          "UPDATE orders SET license_token=COALESCE(NULLIF(license_token,''),$2), encrypted_key=COALESCE($3, encrypted_key) WHERE id=$1",
+          [row.id, rebuilt.token, enc]
+        );
+        return rebuilt.token;
+      }
+    }
+    return null;
+  }
+
+  async function sendLicenseEmail({ email, token, tier, maxDevices, licenseId }) {
+    if (!n8nEmailUrl) return false;
+    try {
+      const r = await fetch(n8nEmailUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          to: email,
+          from: emailFrom,
+          subject: "Tu licencia de VoxFlow Studio",
+          html: licenseEmailHtml({ email, token, tier, maxDevices, licenseId }),
+          downloadUrl: "https://voxflow.iareal.net/api/download/latest",
+        }),
+      });
+      return r.ok;
+    } catch {
+      return false;
+    }
+  }
+
   async function handle(req, res, url, p) {
     // ---------- OAuth ----------
     if (p === "/api/auth/google/login" && req.method === "GET") {
@@ -188,7 +255,7 @@ export function createAdmin(ctx) {
         });
         const info = await infoRes.json();
         if (!infoRes.ok || !info?.email) return redirectTo(res, "/admin?error=userinfo");
-        if (info.email_verified === false) return redirectTo(res, "/admin?error=unverified");
+        if (info.email_verified !== true) return redirectTo(res, "/admin?error=unverified");
         email = String(info.email).toLowerCase();
       } catch {
         return redirectTo(res, "/admin?error=google");
@@ -218,7 +285,8 @@ export function createAdmin(ctx) {
       );
       if (!configured) return sendHtml(res, 503, configPage(missing));
       const session = sessionFrom(req);
-      if (!session) return sendHtml(res, 200, loginPage(url.searchParams.get("error"), configured));
+      // Capa 5: fail-closed. Sin cookie de sesión firmada => 401 del lado servidor.
+      if (!session) return sendHtml(res, 401, loginPage(url.searchParams.get("error"), configured));
       return sendHtml(res, 200, adminPage(session.email));
     }
 
@@ -252,7 +320,7 @@ export function createAdmin(ctx) {
           const like = q ? `%${q}%` : "%";
           const { rows } = await pool.query(
             `SELECT id, email, tier, max_devices, amount_cents, currency, status, license_id, license_token,
-                    created_at, paid_at
+                    encrypted_key IS NOT NULL AS key_encrypted, created_at, paid_at
                FROM orders
               WHERE license_id IS NOT NULL
                 AND (email ILIKE $1 OR license_id ILIKE $1 OR tier ILIKE $1)
@@ -277,7 +345,21 @@ export function createAdmin(ctx) {
             byLicense.get(a.license_id).push(a);
           }
           return sendJson(res, 200, {
-            rows: rows.map((r) => ({ ...r, macs: byLicense.get(r.license_id) || [] })),
+            // Nunca devolvemos la clave en claro al listado: solo el `:id` y el estado.
+            rows: rows.map((r) => ({
+              id: r.id,
+              email: r.email,
+              tier: r.tier,
+              max_devices: r.max_devices,
+              amount_cents: r.amount_cents,
+              currency: r.currency,
+              status: r.status,
+              license_id: r.license_id,
+              has_key: Boolean(r.key_encrypted || String(r.license_token || "").startsWith("VFS1.")),
+              created_at: r.created_at,
+              paid_at: r.paid_at,
+              macs: byLicense.get(r.license_id) || [],
+            })),
           });
         }
 
@@ -292,31 +374,18 @@ export function createAdmin(ctx) {
 
         const resend = p.match(/^\/api\/admin\/orders\/([A-Za-z0-9-]+)\/resend$/);
         if (resend && req.method === "POST") {
-          const licenseId = resend[1];
-          const { rows } = await pool.query(
-            "SELECT email, license_token, tier, max_devices FROM orders WHERE license_id=$1 AND license_token IS NOT NULL ORDER BY paid_at DESC NULLS LAST LIMIT 1",
-            [licenseId]
-          );
-          if (!rows.length) return deny(res, 404, "license not found");
+          const row = await resolveLicenseRow(resend[1]);
+          if (!row) return deny(res, 404, "license not found");
           if (!n8nEmailUrl) return deny(res, 503, "N8N_EMAIL_URL not configured");
-          const row = rows[0];
-          const r = await fetch(n8nEmailUrl, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              to: row.email,
-              from: emailFrom,
-              subject: "Tu licencia de VoxFlow Studio",
-              html: licenseEmailHtml({
-                email: row.email,
-                token: row.license_token,
-                tier: row.tier,
-                maxDevices: row.max_devices,
-                licenseId,
-              }),
-            }),
+          const token = await licenseTokenFor(row);
+          if (!token) return deny(res, 404, "license key unavailable");
+          const sent = await sendLicenseEmail({
+            email: row.email,
+            token,
+            tier: row.tier,
+            maxDevices: row.max_devices,
+            licenseId: row.license_id,
           });
-          const sent = r.ok;
           if (!sent) return deny(res, 502, "email gateway error");
           return sendJson(res, 200, { ok: true, to: row.email });
         }
@@ -328,6 +397,72 @@ export function createAdmin(ctx) {
           return sendJson(res, 200, { ok: true, freed: d.rowCount });
         }
 
+        const actionMatch = p.match(/^\/api\/admin\/licenses\/([^/]+)(?:\/(key|resend|status))?$/);
+        if (actionMatch) {
+          const row = await resolveLicenseRow(decodeURIComponent(actionMatch[1]));
+          if (!row) return deny(res, 404, "license not found");
+          const action = actionMatch[2] || "";
+
+          // a) Copiar: devuelve la clave descifrada en 1 clic.
+          if (action === "key" && req.method === "GET") {
+            const token = await licenseTokenFor(row);
+            if (!token) return deny(res, 404, "license key unavailable");
+            return sendJson(res, 200, {
+              ok: true,
+              licenseId: row.license_id,
+              email: row.email,
+              tier: row.tier,
+              maxDevices: row.max_devices,
+              status: row.status === "revoked" ? "revoked" : "active",
+              licenseKey: token,
+            });
+          }
+
+          // b) Reenviar: descifra y manda el correo (Resend vía n8n) desde voxflow@iareal.net.
+          if (action === "resend" && req.method === "POST") {
+            const token = await licenseTokenFor(row);
+            if (!token) return deny(res, 404, "license key unavailable");
+            const sent = await sendLicenseEmail({
+              email: row.email,
+              token,
+              tier: row.tier,
+              maxDevices: row.max_devices,
+              licenseId: row.license_id,
+            });
+            if (!sent) return deny(res, 502, "email gateway error");
+            return sendJson(res, 200, { ok: true, to: row.email, downloadUrl: "https://voxflow.iareal.net/api/download/latest" });
+          }
+
+          // c) Revocar / Reactivar: `revoked` corta /api/license/activate con 403 y libera Macs.
+          if (action === "status" && req.method === "POST") {
+            const body = JSON.parse((await readBody(req)) || "{}");
+            const wanted = String(body.status || "").toLowerCase();
+            const currentlyRevoked = row.status === "revoked";
+            const nextRevoked = wanted === "revoked" || wanted === "active" ? wanted === "revoked" : !currentlyRevoked;
+            if (nextRevoked) {
+              await pool.query("UPDATE orders SET status='revoked', revoked_at=NOW() WHERE id=$1", [row.id]);
+              await pool.query("DELETE FROM license_activations WHERE license_id=$1", [row.license_id]);
+            } else {
+              await pool.query("UPDATE orders SET status='paid', revoked_at=NULL WHERE id=$1", [row.id]);
+            }
+            return sendJson(res, 200, {
+              ok: true,
+              licenseId: row.license_id,
+              status: nextRevoked ? "revoked" : "active",
+              seatsCleared: nextRevoked,
+            });
+          }
+
+          // d) Eliminar: borra licencia + activaciones asociadas.
+          if (!action && req.method === "DELETE") {
+            await pool.query("DELETE FROM license_activations WHERE license_id=$1", [row.license_id]);
+            await pool.query("DELETE FROM orders WHERE id=$1", [row.id]);
+            return sendJson(res, 200, { ok: true, deleted: row.license_id });
+          }
+
+          return deny(res, 405, "method not allowed");
+        }
+
         if (p === "/api/admin/licenses" && req.method === "POST") {
           const body = JSON.parse((await readBody(req)) || "{}");
           const email = String(body.email || "").trim().toLowerCase();
@@ -337,32 +472,21 @@ export function createAdmin(ctx) {
           if (!plan) return deny(res, 400, "invalid plan");
           if (!process.env.VOXFLOW_ED25519_PRIVATE_KEY) return deny(res, 503, "signing key not configured");
           const { token, payload } = signLicense(email, plan.tier, plan.maxDevices);
+          const encrypted = encryptKey ? encryptKey(token) : null;
           await pool.query(
-            `INSERT INTO orders(email,tier,max_devices,amount_cents,currency,status,license_id,license_token,paid_at)
-             VALUES($1,$2,$3,$4,'usd','paid',$5,$6,NOW())`,
-            [email, plan.tier, plan.maxDevices, plan.price, payload.licenseId, token]
+            `INSERT INTO orders(email,tier,max_devices,amount_cents,currency,status,license_id,license_token,encrypted_key,paid_at)
+             VALUES($1,$2,$3,$4,'usd','paid',$5,$6,$7,NOW())`,
+            [email, plan.tier, plan.maxDevices, plan.price, payload.licenseId, token, encrypted]
           );
           let mailed = false;
           if (body.sendEmail && n8nEmailUrl) {
-            try {
-              const r = await fetch(n8nEmailUrl, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({
-                  to: email,
-                  from: emailFrom,
-                  subject: "Tu licencia de VoxFlow Studio",
-                  html: licenseEmailHtml({
-                    email,
-                    token,
-                    tier: plan.tier,
-                    maxDevices: plan.maxDevices,
-                    licenseId: payload.licenseId,
-                  }),
-                }),
-              });
-              mailed = r.ok;
-            } catch {}
+            mailed = await sendLicenseEmail({
+              email,
+              token,
+              tier: plan.tier,
+              maxDevices: plan.maxDevices,
+              licenseId: payload.licenseId,
+            });
           }
           return sendJson(res, 200, { ok: true, email, tier: plan.tier, maxDevices: plan.maxDevices, licenseId: payload.licenseId, licenseKey: token, mailed });
         }
@@ -431,6 +555,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .pill.paid{color:#9ff5d9;border-color:rgba(15,186,130,.4);background:rgba(15,186,130,.12)}
 .pill.pending{color:#ffe0a3;border-color:rgba(255,184,0,.4);background:rgba(255,184,0,.10)}
 .pill.plan{color:#bfe9ff;border-color:rgba(0,240,255,.35);background:rgba(0,240,255,.10)}
+.pill.revoked{color:#ffb4ae;border-color:rgba(255,69,58,.45);background:rgba(255,69,58,.12)}
 .key{font-size:11.5px;color:var(--ink2);word-break:break-all;max-width:240px;display:block}
 details summary{cursor:pointer;font-size:12px;color:var(--cyan);list-style:none}
 details summary::-webkit-details-marker{display:none}
@@ -617,7 +742,7 @@ function adminPage(email) {
       if(!rows.length){const tr=el('tr');const td=el('td','empty','Sin resultados');td.colSpan=7;tr.appendChild(td);tbody.appendChild(tr);return;}
       rows.forEach((r)=>{
         const tr=el('tr');
-        const emailTd=el('td');emailTd.dataset.label='Email';emailTd.appendChild(el('div',null,r.email));emailTd.appendChild(el('span','note mono',String(r.license_token||'').slice(0,18)+'…'));tr.appendChild(emailTd);
+        const emailTd=el('td');emailTd.dataset.label='Email';emailTd.appendChild(el('div',null,r.email));emailTd.appendChild(el('span','note mono',r.has_key?'Clave cifrada AES-256-GCM':'Sin clave emitida'));tr.appendChild(emailTd);
 
         const plan=el('td');plan.dataset.label='Plan';plan.appendChild(el('span','pill plan',r.tier));tr.appendChild(plan);
 
@@ -631,10 +756,21 @@ function adminPage(email) {
 
         const act=el('td');act.dataset.label='';
         const box=el('div','row-actions');
-        const copy=el('button','btn','Copiar VFS1');copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(r.license_token||'');toast('Clave copiada');}catch{toast('No se pudo copiar');}});
-        const send=el('button','btn','Reenviar');send.addEventListener('click',async()=>{send.disabled=true;try{const o=await api('/api/admin/orders/'+encodeURIComponent(r.license_id)+'/resend',{method:'POST'});toast('Licencia reenviada a '+o.to);}catch(e){toast('Error: '+e.message);}send.disabled=false;});
-        const free=el('button','btn danger','Liberar Macs');free.addEventListener('click',async()=>{if(!confirm('¿Liberar todas las Macs de '+r.email+'? Podrá activar la licencia en otra Mac.'))return;free.disabled=true;try{const o=await api('/api/admin/orders/'+encodeURIComponent(r.license_id)+'/reset-seats',{method:'POST'});toast(o.freed+' Macs liberadas');loadOrders();loadSummary();}catch(e){toast('Error: '+e.message);}free.disabled=false;});
-        box.append(copy,send,free);act.appendChild(box);tr.appendChild(act);
+        const keyUrl='/api/admin/licenses/'+encodeURIComponent(r.license_id);
+        const revoked=r.status==='revoked';
+        const st=el('span','pill '+(revoked?'revoked':'paid'),revoked?'REVOCADA':'ACTIVA');
+        box.appendChild(st);
+        // a) Copiar: descarga la clave descifrada por :id (nunca viaja en el listado).
+        const copy=el('button','btn','Copiar');copy.addEventListener('click',async()=>{copy.disabled=true;try{const o=await api(keyUrl+'/key');await navigator.clipboard.writeText(o.licenseKey||'');toast('Clave copiada al portapapeles');}catch(e){toast('Error: '+e.message);}copy.disabled=false;});
+        // b) Reenviar: descifra y manda el correo con el enlace de descarga.
+        const send=el('button','btn','Reenviar');send.addEventListener('click',async()=>{send.disabled=true;try{const o=await api(keyUrl+'/resend',{method:'POST'});toast('Licencia reenviada a '+o.to);}catch(e){toast('Error: '+e.message);}send.disabled=false;});
+        // c) Revocar / Reactivar en 1 clic.
+        const toggle=el('button','btn '+(revoked?'':'danger'),revoked?'Reactivar':'Revocar');
+        toggle.addEventListener('click',async()=>{if(!revoked&&!confirm('¿Revocar la licencia de '+r.email+'? Las Macs del cliente quedarán bloqueadas de inmediato.'))return;toggle.disabled=true;try{const o=await api(keyUrl+'/status',{method:'POST',body:JSON.stringify({status:revoked?'active':'revoked'})});toast(o.status==='revoked'?'Licencia revocada y Macs liberadas':'Licencia reactivada');loadOrders();loadSummary();}catch(e){toast('Error: '+e.message);}toggle.disabled=false;});
+        // d) Eliminar: licencia + activaciones.
+        const del=el('button','btn danger','Eliminar');del.addEventListener('click',async()=>{if(!confirm('¿Eliminar definitivamente la licencia '+r.license_id+' de '+r.email+'? Esta acción no se puede deshacer.'))return;del.disabled=true;try{await api(keyUrl,{method:'DELETE'});toast('Licencia eliminada');loadOrders();loadSummary();}catch(e){toast('Error: '+e.message);}del.disabled=false;});
+        const free=el('button','btn','Liberar Macs');free.addEventListener('click',async()=>{if(!confirm('¿Liberar todas las Macs de '+r.email+'? Podrá activar la licencia en otra Mac.'))return;free.disabled=true;try{const o=await api('/api/admin/orders/'+encodeURIComponent(r.license_id)+'/reset-seats',{method:'POST'});toast(o.freed+' Macs liberadas');loadOrders();loadSummary();}catch(e){toast('Error: '+e.message);}free.disabled=false;});
+        box.append(copy,send,toggle,del,free);act.appendChild(box);tr.appendChild(act);
         tbody.appendChild(tr);
       });
     }

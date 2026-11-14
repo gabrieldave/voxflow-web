@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { createAdmin } from "./admin.mjs";
+import { decryptLicenseKey, encryptLicenseKey, vaultReady } from "./license-vault.mjs";
 
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -16,7 +17,7 @@ const N8N_URL = (process.env.N8N_PAYMENT_URL || "https://n8n.vibesystems.tech/we
 const N8N_EMAIL_URL = (process.env.N8N_EMAIL_URL || "https://n8n.vibesystems.tech/webhook/email/send").replace(/\/$/, "");
 const EMAIL_FROM = process.env.EMAIL_FROM || "VoxFlow Studio <voxflow@iareal.net>";
 const DB_URL = process.env.DATABASE_URL || process.env.APP_VOXFLOW_DATABASE_URL || "";
-const VERSION = "2.4.2";
+const VERSION = "2.4.3";
 
 const PLANS = {
   personal: { tier: "Personal", price: 2900, maxDevices: 1 },
@@ -51,6 +52,15 @@ async function migrate() {
   await pool.query(`CREATE INDEX IF NOT EXISTS activations_license_idx ON license_activations (license_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS trial_leads_email_idx ON trial_leads (lower(email))`);
   await pool.query(`CREATE INDEX IF NOT EXISTS hardware_trials_last_seen_idx ON hardware_trials (last_seen_at DESC)`);
+
+  // Capa 5: bóveda AES-256-GCM + estado de revocación. Migración idempotente.
+  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS encrypted_key TEXT`);
+  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS orders_payment_intent_idx ON orders (stripe_payment_intent)`);
+
+  // Capa 6: idempotencia de eventos Stripe por `event.id`.
+  await pool.query(`CREATE TABLE IF NOT EXISTS stripe_events (
+    event_id TEXT PRIMARY KEY, type TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
 }
 
 // --- Ed25519 con crypto nativo (DER PKCS8 para seed raw) ---
@@ -108,15 +118,113 @@ function signSeal(prefix, payload) {
   return `${prefix}.${payloadB64}.${signEd25519(payloadB64, priv)}`;
 }
 
-// rate-limit mínimo por IP
-const hits = new Map();
-function rateLimited(ip, max = 60, windowMs = 60000) {
-  const now = Date.now();
-  const arr = (hits.get(ip) || []).filter((t) => now - t < windowMs);
-  arr.push(now); hits.set(ip, arr);
-  return arr.length > max;
+/** Reconstruye la clave VFS1 de una fila histórica a partir de los campos del payload. */
+function rebuildLicenseToken(row) {
+  const priv = process.env.VOXFLOW_ED25519_PRIVATE_KEY;
+  if (!priv || !row?.license_id || !row?.email) return null;
+  const payload = {
+    licenseId: row.license_id,
+    email: row.email,
+    tier: row.tier,
+    maxDevices: Number(row.max_devices || 1),
+    issuedAt: new Date(row.issued_at || Date.now()).toISOString(),
+    product: "com.blackeye.voxflowstudio",
+  };
+  const payloadB64 = jsonPayload(payload);
+  return { token: `VFS1.${payloadB64}.${signEd25519(payloadB64, priv)}`, payload };
 }
-function clientIp(req) { return (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown").toString().split(",")[0].trim(); }
+
+/** Verificación criptográfica de `Stripe-Signature` (t=<ts>,v1=<hmac>) sobre el raw body. */
+function stripeSignatureValid(rawBody, header, secret) {
+  const parts = String(header || "").split(",").reduce((acc, chunk) => {
+    const i = chunk.indexOf("=");
+    if (i > 0) acc[chunk.slice(0, i).trim()] = chunk.slice(i + 1).trim();
+    return acc;
+  }, {});
+  const timestamp = parts.t;
+  const signature = parts.v1;
+  if (!timestamp || !signature) return false;
+  const expected = crypto.createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("hex");
+  const a = Buffer.from(expected);
+  const b = Buffer.from(signature);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
+  // Ventana anti-replay de 5 minutos.
+  return Math.abs(Date.now() / 1000 - Number(timestamp)) < 300;
+}
+
+/**
+ * Capa 5: backfill seguro al arrancar. Cifra las filas históricas con
+ * `encrypted_key IS NULL` usando la clave ya guardada o, si no existe,
+ * reconstruyéndola con VOXFLOW_ED25519_PRIVATE_KEY. Idempotente y silencioso.
+ */
+async function backfillEncryptedKeys(limit = 500) {
+  if (!pool || !vaultReady()) return 0;
+  let updated = 0;
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, email, tier, max_devices, license_id, license_token,
+              COALESCE(paid_at, created_at) AS issued_at
+         FROM orders
+        WHERE encrypted_key IS NULL
+          AND license_id IS NOT NULL
+          AND email IS NOT NULL
+        ORDER BY id ASC
+        LIMIT $1`,
+      [limit]
+    );
+    for (const row of rows) {
+      let token = /^VFS1\./.test(String(row.license_token || "").trim()) ? String(row.license_token).trim() : null;
+      if (!token) {
+        const rebuilt = rebuildLicenseToken(row);
+        token = rebuilt?.token || null;
+        if (token) {
+          await pool.query("UPDATE orders SET license_token=$1 WHERE id=$2 AND (license_token IS NULL OR license_token='')", [token, row.id]);
+        }
+      }
+      if (!token) continue;
+      const encrypted = encryptLicenseKey(token);
+      if (!encrypted) continue;
+      await pool.query("UPDATE orders SET encrypted_key=$1 WHERE id=$2 AND encrypted_key IS NULL", [encrypted, row.id]);
+      updated++;
+    }
+  } catch (e) {
+    console.error("backfill keys failed", e?.message);
+  }
+  if (updated) console.log(`licencias historicas cifradas: ${updated}`);
+  return updated;
+}
+
+// Capa 6: rate limiting por IP real (Cloudflare) con ventana deslizante y Retry-After.
+const buckets = new Map();
+function realIp(req) {
+  const cf = req.headers["cf-connecting-ip"];
+  if (cf) return String(cf).trim();
+  const xff = req.headers["x-forwarded-for"];
+  if (xff) return String(xff).split(",")[0].trim();
+  return req.socket?.remoteAddress || "unknown";
+}
+function clientIp(req) { return realIp(req); }
+function rateLimit(req, res, name, max, windowMs) {
+  const key = `${name}:${realIp(req)}`;
+  const now = Date.now();
+  const arr = (buckets.get(key) || []).filter((t) => now - t < windowMs);
+  if (arr.length >= max) {
+    const retryAfter = Math.max(1, Math.ceil((windowMs - (now - arr[0])) / 1000));
+    res.setHeader("retry-after", String(retryAfter));
+    sendJson(res, 429, {
+      error: "rate_limited",
+      message: `Demasiadas peticiones. Reintenta en ${retryAfter} s / Too many requests. Retry in ${retryAfter}s.`,
+      retryAfter,
+    });
+    return true;
+  }
+  arr.push(now);
+  buckets.set(key, arr);
+  if (buckets.size > 4000) {
+    for (const [k, v] of buckets) if (!v.some((t) => now - t < windowMs)) buckets.delete(k);
+  }
+  return false;
+}
 
 /* ---------- Geolocalización de idioma (CF-IPCountry → /es) ---------- */
 const SPANISH_COUNTRIES = new Set([
@@ -175,6 +283,26 @@ function securityHeaders(res) {
   res.setHeader("X-Frame-Options", "SAMEORIGIN");
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   res.setHeader("Strict-Transport-Security", "max-age=63072000; includeSubDomains");
+  // Capa 6: CSP estricta en todas las respuestas (sin 'unsafe-eval').
+  res.setHeader(
+    "Content-Security-Policy",
+    [
+      "default-src 'self'",
+      "base-uri 'self'",
+      "object-src 'none'",
+      "script-src 'self' 'unsafe-inline' https://js.stripe.com https://accounts.google.com",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob: https:",
+      "media-src 'self' data: blob:",
+      "font-src 'self' data:",
+      "connect-src 'self' https://api.stripe.com https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com",
+      "frame-src https://js.stripe.com https://accounts.google.com https://hooks.stripe.com",
+      "form-action 'self' https://accounts.google.com https://checkout.stripe.com",
+      "frame-ancestors 'self'",
+      "worker-src 'self' blob:",
+    ].join("; ")
+  );
+  res.setHeader("X-Permitted-Cross-Domain-Policies", "none");
 }
 
 const MIME = { ".html": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript", ".json": "application/json", ".png": "image/png", ".webp": "image/webp", ".jpg": "image/jpeg", ".svg": "image/svg+xml", ".txt": "text/plain", ".xml": "application/xml", ".webmanifest": "application/manifest+json" };
@@ -206,6 +334,9 @@ const admin = createAdmin({
   signLicense,
   sendJson,
   readBody,
+  encryptKey: encryptLicenseKey,
+  decryptKey: decryptLicenseKey,
+  rebuildToken: rebuildLicenseToken,
 });
 
 const server = http.createServer(async (req, res) => {
@@ -218,7 +349,19 @@ const server = http.createServer(async (req, res) => {
       const handled = await admin.handle(req, res, url, p);
       if (handled !== false) return;
     }
-    if (p === "/api/health") return sendJson(res, 200, { ok: true, version: VERSION });
+    // Capa 6: límites por IP real sobre todo el espacio de licencias y trials.
+    if (p.startsWith("/api/license/") && rateLimit(req, res, "license", 12, 15 * 60 * 1000)) return;
+    if (p.startsWith("/api/trial") && rateLimit(req, res, "trial", 20, 15 * 60 * 1000)) return;
+    if (p === "/api/health") {
+      let db = false;
+      if (pool) {
+        try {
+          const health = await pool.query("SELECT 1 AS ok");
+          db = Number(health.rows?.[0]?.ok) === 1;
+        } catch {}
+      }
+      return sendJson(res, 200, { ok: true, version: VERSION, db });
+    }
     if (p === "/api/updates/latest" && (req.method === "GET" || req.method === "HEAD")) {
       const manifestPath = path.join(RELEASES, "latest.json");
       if (fs.existsSync(manifestPath)) {
@@ -260,7 +403,7 @@ const server = http.createServer(async (req, res) => {
       return fs.createReadStream(f).pipe(res);
     }
     if (p === "/api/checkout" && (req.method === "GET" || req.method === "POST")) {
-      if (rateLimited(ip, 30)) return sendJson(res, 429, { error: "too many requests" });
+      if (rateLimit(req, res, "checkout", 30, 60 * 1000)) return;
       const bodyText = req.method === "POST" ? await readBody(req) : "";
       const body = bodyText ? JSON.parse(bodyText) : {};
       const tier = (url.searchParams.get("tier") || body.tier || "").toLowerCase();
@@ -312,22 +455,79 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === "/api/webhooks/stripe" && req.method === "POST") {
       const raw = await readBody(req);
-      const data = JSON.parse(raw || "{}");
-      const session = data.data?.object || data;
+      const signature = req.headers["stripe-signature"];
+      const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || "";
+      // Capa 6: fail-closed. Sin firma criptográfica válida no se emite ni revoca nada.
+      if (!webhookSecret) return sendJson(res, 503, { error: "webhook secret not configured" });
+      if (!signature) return sendJson(res, 400, { error: "missing stripe-signature" });
+      if (!stripeSignatureValid(raw, String(signature), webhookSecret)) {
+        return sendJson(res, 400, { error: "invalid stripe signature" });
+      }
+      let event;
+      try { event = JSON.parse(raw || "{}"); } catch { return sendJson(res, 400, { error: "invalid json" }); }
+
+      // Idempotencia por `event.id` (PostgreSQL).
+      if (pool && event.id) {
+        const claim = await pool.query(
+          "INSERT INTO stripe_events(event_id,type) VALUES($1,$2) ON CONFLICT (event_id) DO NOTHING",
+          [String(event.id), String(event.type || "")]
+        );
+        if (claim.rowCount === 0) return sendJson(res, 200, { ok: true, duplicate: true });
+      }
+
+      const object = event.data?.object || event.data || {};
+      const eventType = String(event.type || "");
+
+      // Reembolsos y disputas: revocación automática de la licencia y sus asientos.
+      if (eventType === "charge.refunded" || eventType === "charge.dispute.created") {
+        const paymentIntent = String(object.payment_intent || object.charge || "");
+        const email = String(object.billing_details?.email || object.receipt_email || object.customer_email || "").toLowerCase();
+        const sessionId = String(object.metadata?.checkout_session_id || object.checkout_session_id || "");
+        let revoked = [];
+        if (pool) {
+          const upd = await pool.query(
+            `UPDATE orders SET status='revoked', revoked_at=NOW()
+              WHERE ($1 <> '' AND stripe_payment_intent=$1)
+                 OR ($2 <> '' AND lower(email)=$2)
+                 OR ($3 <> '' AND stripe_session_id=$3)
+              RETURNING license_id`,
+            [paymentIntent, email, sessionId]
+          );
+          revoked = upd.rows.map((r) => r.license_id).filter(Boolean);
+          if (revoked.length) {
+            await pool.query("DELETE FROM license_activations WHERE license_id = ANY($1::text[])", [revoked]);
+          }
+        }
+        return sendJson(res, 200, { ok: true, revoked: revoked.length });
+      }
+
+      // Alta de licencia tras pago completado.
+      const session = object;
       const sessionId = session.id || session.checkout_session_id;
-      const email = session.customer_email || session.email || data.email;
-      const tier = (session.metadata?.tier || data.tier || "pro").toLowerCase();
+      const email = session.customer_details?.email || session.customer_email || session.receipt_email || session.email;
+      const tier = (session.metadata?.tier || session.tier || "pro").toLowerCase();
       const plan = PLANS[tier] || PLANS.pro;
       if (!sessionId || !email) return sendJson(res, 400, { error: "missing session/email" });
-      // Idempotencia
+
       if (pool) {
         const { rows } = await pool.query("SELECT license_token FROM orders WHERE stripe_session_id=$1 AND status='paid'", [sessionId]);
         if (rows.length && rows[0].license_token) return sendJson(res, 200, { ok: true, duplicate: true });
       }
       const { token, payload } = signLicense(email, plan.tier, plan.maxDevices);
+      const encrypted = encryptLicenseKey(token);
+      const paymentIntent = String(session.payment_intent || "");
       if (pool) {
-        await pool.query("UPDATE orders SET status='paid', paid_at=NOW(), license_id=$1, license_token=$2, stripe_session_id=$3 WHERE stripe_session_id IS NULL OR stripe_session_id<>$3", [payload.licenseId, token, sessionId]).catch(() => {});
-        await pool.query("INSERT INTO orders(email,tier,max_devices,amount_cents,currency,status,stripe_session_id,license_id,license_token,paid_at) VALUES($1,$2,$3,$4,'usd','paid',$5,$6,$7,NOW()) ON CONFLICT (stripe_session_id) DO UPDATE SET status='paid', paid_at=NOW(), license_id=EXCLUDED.license_id, license_token=EXCLUDED.license_token", [email, plan.tier, plan.maxDevices, plan.price, sessionId, payload.licenseId, token]);
+        await pool.query(
+          `INSERT INTO orders(email,tier,max_devices,amount_cents,currency,status,stripe_session_id,stripe_payment_intent,license_id,license_token,encrypted_key,paid_at)
+           VALUES($1,$2,$3,$4,'usd','paid',$5,NULLIF($6,''),$7,$8,$9,NOW())
+           ON CONFLICT (stripe_session_id) DO UPDATE
+             SET status='paid', paid_at=COALESCE(orders.paid_at, NOW()),
+                 stripe_payment_intent=COALESCE(NULLIF(EXCLUDED.stripe_payment_intent,''), orders.stripe_payment_intent),
+                 license_id=EXCLUDED.license_id,
+                 license_token=EXCLUDED.license_token,
+                 encrypted_key=COALESCE(EXCLUDED.encrypted_key, orders.encrypted_key)`,
+          [email, plan.tier, plan.maxDevices, plan.price, sessionId, paymentIntent, payload.licenseId, token, encrypted]
+        );
       }
       // Email vía n8n/Resend si configurado
       if (N8N_EMAIL_URL) {
@@ -338,13 +538,25 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true });
     }
     if (p === "/api/license/activate" && req.method === "POST") {
-      if (rateLimited(ip, 30)) return sendJson(res, 429, { error: "too many requests" });
       const { licenseKey, hardwareHash, chip, appVersion } = JSON.parse((await readBody(req)) || "{}");
       const pub = process.env.VOXFLOW_ED25519_PUBLIC_KEY;
       if (!pub || !licenseKey || !hardwareHash) return sendJson(res, 400, { error: "missing fields" });
       const payload = verifyToken(licenseKey, pub);
       if (!payload || payload.product !== "com.blackeye.voxflowstudio") return sendJson(res, 401, { error: "invalid license signature" });
       if (!pool) return sendJson(res, 503, { error: "database unavailable" });
+
+      // Capa 5: licencia revocada / reembolsada → 403 inmediato y sin asientos.
+      const { rows: licenseRows } = await pool.query(
+        "SELECT status FROM orders WHERE license_id=$1 ORDER BY COALESCE(paid_at, created_at) DESC LIMIT 1",
+        [payload.licenseId]
+      );
+      if (licenseRows.length && licenseRows[0].status === "revoked") {
+        await pool.query("DELETE FROM license_activations WHERE license_id=$1", [payload.licenseId]).catch(() => {});
+        return sendJson(res, 403, {
+          error: "license revoked",
+          message: "Licencia revocada o reembolsada. Contacta soporte: voxflow@iareal.net",
+        });
+      }
 
       // Claves emitidas por CLI (p.ej. Founder BE-21A37127) se indexan en `orders`
       // la primera vez que se activan, para que aparezcan siempre en /admin.
@@ -402,7 +614,6 @@ const server = http.createServer(async (req, res) => {
       });
     }
     if (p === "/api/license/status" && req.method === "POST") {
-      if (rateLimited(ip, 45)) return sendJson(res, 429, { error: "too many requests" });
       const { licenseKey, hardwareHash } = JSON.parse((await readBody(req)) || "{}");
       const pub = process.env.VOXFLOW_ED25519_PUBLIC_KEY;
       const payload = pub && licenseKey ? verifyToken(licenseKey, pub) : null;
@@ -428,7 +639,6 @@ const server = http.createServer(async (req, res) => {
       });
     }
     if (p === "/api/license/deactivate" && req.method === "POST") {
-      if (rateLimited(ip, 30)) return sendJson(res, 429, { error: "too many requests" });
       const { licenseKey, hardwareHash } = JSON.parse((await readBody(req)) || "{}");
       const pub = process.env.VOXFLOW_ED25519_PUBLIC_KEY;
       const payload = pub && licenseKey ? verifyToken(licenseKey, pub) : null;
@@ -439,7 +649,6 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, seatsUsed: c[0].c, maxDevices: payload.maxDevices, licenseId: payload.licenseId, tier: payload.tier, email: payload.email });
     }
     if (p === "/api/trial/start" && req.method === "POST") {
-      if (rateLimited(ip, 20)) return sendJson(res, 429, { error: "too many requests" });
       const { email, locale, country } = JSON.parse(await readBody(req));
       if (!email || !String(email).includes("@")) return sendJson(res, 400, { error: "invalid email" });
       if (pool) {
@@ -452,8 +661,7 @@ const server = http.createServer(async (req, res) => {
     }
     // Ancla de trial por hardware: 14 días contados SIEMPRE por el reloj del VPS/PostgreSQL.
     // Respuesta firmada Ed25519 (VFST) para que no se pueda falsificar con /etc/hosts o proxy local.
-    if (p === "/api/trial/verify" && req.method === "POST") {
-      if (rateLimited(ip, 30)) return sendJson(res, 429, { error: "too many requests" });
+    if ((p === "/api/trial/verify" || p === "/api/trial/sync") && req.method === "POST") {
       const body = JSON.parse((await readBody(req)) || "{}");
       const hardwareHash = String(body.hardwareHash || "").trim();
       const appVersion = String(body.appVersion || "").slice(0, 32);
@@ -531,4 +739,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 await migrate().catch((e) => console.error("migrate failed", e.message));
+await backfillEncryptedKeys();
 server.listen(PORT, HOST, () => console.log(`voxflow-web listening on ${HOST}:${PORT}`));
